@@ -50,5 +50,4 @@ export const api = {
   validateRange: (range: string) => request<{ valid: boolean, error?: string }>('/validate-range', { range }),
   listSpots: () => request<SpotsResponse>('/spots'),
   loadSpot: (id: number) => request<NodeView>('/spots/load', { id }),
-  deleteSpot: (id: number) => request<SpotsResponse>('/spots/delete', { id }),
 }

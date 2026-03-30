@@ -932,48 +932,6 @@ async fn load_spot(
     (StatusCode::OK, Json(serde_json::json!(build_node_view(game))))
 }
 
-async fn delete_spot(
-    State(state): State<AppState>,
-    Json(req): Json<LoadSpotRequest>,
-) -> impl IntoResponse {
-    // If deleting active spot, clear it
-    {
-        let mut inner = state.inner.lock().unwrap();
-        if inner.active_spot_id == Some(req.id) {
-            inner.active_game = None;
-            inner.active_spot_id = None;
-        }
-    }
-
-    if let Err(e) = sqlx::query("DELETE FROM spots WHERE id = $1")
-        .bind(req.id)
-        .execute(&state.db)
-        .await
-    {
-        return err_resp(format!("DB error: {}", e));
-    }
-
-    let active_id = {
-        let inner = state.inner.lock().unwrap();
-        inner.active_spot_id
-    };
-
-    let spots = sqlx::query_as::<_, SpotMeta>(
-        "SELECT id, label, board, oop_range, ip_range, pot, stack, exploitability, iterations
-         FROM spots ORDER BY created_at DESC",
-    )
-    .fetch_all(&state.db)
-    .await;
-
-    match spots {
-        Ok(spots) => (
-            StatusCode::OK,
-            Json(serde_json::json!({ "spots": spots, "active_id": active_id })),
-        ),
-        Err(e) => err_resp(format!("DB error: {}", e)),
-    }
-}
-
 // Row type for loading full spot data
 #[derive(sqlx::FromRow)]
 struct SpotRow {
@@ -1049,7 +1007,6 @@ async fn main() {
         .route("/api/validate-range", post(validate_range))
         .route("/api/spots", get(list_spots))
         .route("/api/spots/load", post(load_spot))
-        .route("/api/spots/delete", post(delete_spot))
         .layer(cors)
         .with_state(state);
 
