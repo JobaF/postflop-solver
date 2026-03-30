@@ -53,16 +53,6 @@
     }
   }
 
-  async function deleteSpot(e: MouseEvent, id: number): Promise<void> {
-    e.stopPropagation()
-    try {
-      await api.deleteSpot(id)
-      await refresh()
-    }
-    catch (err) {
-      $errorMsg = (err as Error).message
-    }
-  }
 </script>
 
 <div class="section">
@@ -81,8 +71,6 @@
         >
           <span class="spot-label">{s.label}</span>
           <span class="spot-exp">exp:{(s.exploitability / s.pot * 100).toFixed(1)}%</span>
-          <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-          <span class="spot-del" on:click={e => deleteSpot(e, s.id)}>x</span>
         </div>
       {/each}
     {/if}
