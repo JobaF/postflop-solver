@@ -93,7 +93,7 @@
       $isSolving = true
       $canSolve = false
       $appView = 'solving'
-      pollInterval = setInterval(pollSolve, 500)
+      pollInterval = setInterval(pollSolve, 2000)
     }
     catch (e) {
       $errorMsg = (e as Error).message

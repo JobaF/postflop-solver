@@ -43,7 +43,6 @@ struct AppInner {
     /// Config used to build the current game (for labeling).
     building_config: Option<BuildConfig>,
     solve_status: SolveStatus,
-    stop_flag: Arc<AtomicBool>,
 }
 
 impl AppInner {
@@ -64,6 +63,7 @@ struct BuildConfig {
 #[derive(Clone)]
 struct AppState {
     inner: Arc<Mutex<AppInner>>,
+    stop_flag: Arc<AtomicBool>,
     db: PgPool,
 }
 
@@ -652,7 +652,7 @@ async fn start_solve(
         inner.active_game = None;
         inner.active_spot_id = None;
         building_config = inner.building_config.clone();
-        stop_flag = inner.stop_flag.clone();
+        stop_flag = state.stop_flag.clone();
         stop_flag.store(false, Ordering::Relaxed);
     }
 
@@ -766,8 +766,7 @@ async fn start_solve(
 }
 
 async fn stop_solve(State(state): State<AppState>) -> impl IntoResponse {
-    let inner = state.inner.lock().unwrap();
-    inner.stop_flag.store(true, Ordering::Relaxed);
+    state.stop_flag.store(true, Ordering::Relaxed);
     Json(serde_json::json!({ "message": "Stop requested" }))
 }
 
@@ -1028,8 +1027,8 @@ async fn main() {
             building_game: None,
             building_config: None,
             solve_status: SolveStatus::Idle,
-            stop_flag: Arc::new(AtomicBool::new(false)),
         })),
+        stop_flag: Arc::new(AtomicBool::new(false)),
         db,
     };
 

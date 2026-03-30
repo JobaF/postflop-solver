@@ -5,7 +5,21 @@
 trap 'kill 0' EXIT
 
 echo "Starting Rust API on :3000..."
-(cd app && cargo run) &
+(cd app && cargo run --release) &
+
+# Wait for backend to be ready before starting frontend
+echo "Waiting for backend..."
+for i in $(seq 1 60); do
+  if curl -s http://localhost:3000/api/solve/status > /dev/null 2>&1; then
+    echo "Backend ready."
+    break
+  fi
+  if [ "$i" -eq 60 ]; then
+    echo "Backend failed to start within 60s, aborting."
+    exit 1
+  fi
+  sleep 1
+done
 
 echo "Starting Svelte frontend on :5173..."
 (cd app/frontend && npm run dev) &
