@@ -1,2 +1,6 @@
 /target
+/app/target
+/app/frontend/node_modules
+/app/frontend/dist
+/app/.env
 Cargo.lock
