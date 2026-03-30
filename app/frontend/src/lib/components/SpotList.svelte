@@ -41,7 +41,9 @@
       $statusText = 'Browsing saved spot'
       const status = await api.solveStatus()
       if (status.status === 'Done') {
-        $solveInfo = `Solved in ${status.iterations} iterations | Exploitability: ${status.exploitability!.toFixed(4)}`
+        const pot = node.pot || 1
+        const expPct = `${(status.exploitability! / pot * 100).toFixed(2)}%`
+        $solveInfo = `Solved in ${status.iterations} iterations | Exploitability: ${expPct} pot`
       }
       $canSolve = true
       await refresh()
@@ -78,7 +80,7 @@
           title="{s.oop_range} vs {s.ip_range}"
         >
           <span class="spot-label">{s.label}</span>
-          <span class="spot-exp">exp:{s.exploitability.toFixed(2)}</span>
+          <span class="spot-exp">exp:{(s.exploitability / s.pot * 100).toFixed(1)}%</span>
           <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
           <span class="spot-del" on:click={e => deleteSpot(e, s.id)}>x</span>
         </div>

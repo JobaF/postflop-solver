@@ -20,18 +20,8 @@
   let startingPot = 200
   let effectiveStack = 900
 
-  let flopBetOop = '33%, 75%, 150%'
-  let flopRaiseOop = '3x'
-  let flopBetIp = '33%, 75%, 150%'
-  let flopRaiseIp = '3x'
-  let turnBetOop = '33%, 75%, 150%'
-  let turnRaiseOop = '3x'
-  let turnBetIp = '33%, 75%, 150%'
-  let turnRaiseIp = '3x'
-  let riverBetOop = '33%, 75%, 150%'
-  let riverRaiseOop = '3x'
-  let riverBetIp = '33%, 75%, 150%'
-  let riverRaiseIp = '3x'
+  let betSizes = '33%, 75%, 150%'
+  let raiseSizes = '3x'
 
   let maxIter = 1000
   let targetExp = 0.5
@@ -46,8 +36,8 @@
     ipRange = p.ip
     startingPot = p.pot
     effectiveStack = p.stack
-    flopBetOop = flopBetIp = turnBetOop = turnBetIp = riverBetOop = riverBetIp = p.bet
-    flopRaiseOop = flopRaiseIp = turnRaiseOop = turnRaiseIp = riverRaiseOop = riverRaiseIp = p.raise
+    betSizes = p.bet
+    raiseSizes = p.raise
   }
 
   async function buildGame(): Promise<void> {
@@ -60,18 +50,18 @@
         board,
         starting_pot: startingPot,
         effective_stack: effectiveStack,
-        flop_bet_oop: flopBetOop,
-        flop_raise_oop: flopRaiseOop,
-        flop_bet_ip: flopBetIp,
-        flop_raise_ip: flopRaiseIp,
-        turn_bet_oop: turnBetOop,
-        turn_raise_oop: turnRaiseOop,
-        turn_bet_ip: turnBetIp,
-        turn_raise_ip: turnRaiseIp,
-        river_bet_oop: riverBetOop,
-        river_raise_oop: riverRaiseOop,
-        river_bet_ip: riverBetIp,
-        river_raise_ip: riverRaiseIp,
+        flop_bet_oop: betSizes,
+        flop_raise_oop: raiseSizes,
+        flop_bet_ip: betSizes,
+        flop_raise_ip: raiseSizes,
+        turn_bet_oop: betSizes,
+        turn_raise_oop: raiseSizes,
+        turn_bet_ip: betSizes,
+        turn_raise_ip: raiseSizes,
+        river_bet_oop: betSizes,
+        river_raise_oop: raiseSizes,
+        river_bet_ip: betSizes,
+        river_raise_ip: raiseSizes,
       })
       $statusText = data.message
       $canSolve = true
@@ -104,14 +94,17 @@
     try {
       const data = await api.solveStatus()
       if (data.status === 'Solving') {
-        const expStr = data.exploitability != null && data.exploitability >= 0 ? data.exploitability.toFixed(2) : '...'
-        $solveInfo = `Iteration ${data.iteration}/${data.max_iterations} | Exploitability: ${expStr}`
+        const expPct = data.exploitability != null && data.exploitability >= 0 && startingPot > 0
+          ? `${(data.exploitability / startingPot * 100).toFixed(2)}%`
+          : '...'
+        $solveInfo = `Iteration ${data.iteration}/${data.max_iterations} | Exploitability: ${expPct} pot`
       }
       else if (data.status === 'Done') {
         if (pollInterval)
           clearInterval(pollInterval)
         pollInterval = null
-        $solveInfo = `Solved in ${data.iterations} iterations | Exploitability: ${data.exploitability!.toFixed(4)}`
+        const expPctDone = startingPot > 0 ? `${(data.exploitability! / startingPot * 100).toFixed(2)}%` : data.exploitability!.toFixed(4)
+        $solveInfo = `Solved in ${data.iterations} iterations | Exploitability: ${expPctDone} pot`
         $isSolving = false
         $canSolve = true
         $statusText = 'Solved'
@@ -177,28 +170,8 @@
   <div class="section">
     <h3>Bet Sizes</h3>
     <div class="row">
-      <div><label for="flop-bet-oop">Flop Bet (OOP)</label><input id="flop-bet-oop" type="text" bind:value={flopBetOop}></div>
-      <div><label for="flop-raise-oop">Raise</label><input id="flop-raise-oop" type="text" bind:value={flopRaiseOop}></div>
-    </div>
-    <div class="row">
-      <div><label for="flop-bet-ip">Flop Bet (IP)</label><input id="flop-bet-ip" type="text" bind:value={flopBetIp}></div>
-      <div><label for="flop-raise-ip">Raise</label><input id="flop-raise-ip" type="text" bind:value={flopRaiseIp}></div>
-    </div>
-    <div class="row">
-      <div><label for="turn-bet-oop">Turn Bet (OOP)</label><input id="turn-bet-oop" type="text" bind:value={turnBetOop}></div>
-      <div><label for="turn-raise-oop">Raise</label><input id="turn-raise-oop" type="text" bind:value={turnRaiseOop}></div>
-    </div>
-    <div class="row">
-      <div><label for="turn-bet-ip">Turn Bet (IP)</label><input id="turn-bet-ip" type="text" bind:value={turnBetIp}></div>
-      <div><label for="turn-raise-ip">Raise</label><input id="turn-raise-ip" type="text" bind:value={turnRaiseIp}></div>
-    </div>
-    <div class="row">
-      <div><label for="river-bet-oop">River Bet (OOP)</label><input id="river-bet-oop" type="text" bind:value={riverBetOop}></div>
-      <div><label for="river-raise-oop">Raise</label><input id="river-raise-oop" type="text" bind:value={riverRaiseOop}></div>
-    </div>
-    <div class="row">
-      <div><label for="river-bet-ip">River Bet (IP)</label><input id="river-bet-ip" type="text" bind:value={riverBetIp}></div>
-      <div><label for="river-raise-ip">Raise</label><input id="river-raise-ip" type="text" bind:value={riverRaiseIp}></div>
+      <div><label for="bet-sizes">Bet</label><input id="bet-sizes" type="text" bind:value={betSizes} placeholder="33%, 75%, 150%"></div>
+      <div><label for="raise-sizes">Raise</label><input id="raise-sizes" type="text" bind:value={raiseSizes} placeholder="3x"></div>
     </div>
   </div>
 
