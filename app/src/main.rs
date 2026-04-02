@@ -1,15 +1,19 @@
+mod artifact;
+
 use axum::{
-    extract::State,
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
+use artifact::{write_solve_artifact, ArtifactManager};
 use postflop_solver::*;
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use std::io::Cursor;
+use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -34,21 +38,15 @@ struct SpotMeta {
 }
 
 struct AppInner {
-    /// The currently active game loaded in memory for browsing.
-    active_game: Option<PostFlopGame>,
-    /// DB id of the active game.
+    /// DB id of the spot being browsed.
     active_spot_id: Option<i64>,
+    /// Current path in the browsed tree.
+    active_path: Vec<i32>,
     /// Game being built/solved (not yet saved).
     building_game: Option<PostFlopGame>,
     /// Config used to build the current game (for labeling).
     building_config: Option<BuildConfig>,
     solve_status: SolveStatus,
-}
-
-impl AppInner {
-    fn game_mut(&mut self) -> Option<&mut PostFlopGame> {
-        self.active_game.as_mut()
-    }
 }
 
 #[derive(Clone)]
@@ -65,6 +63,7 @@ struct AppState {
     inner: Arc<Mutex<AppInner>>,
     stop_flag: Arc<AtomicBool>,
     db: PgPool,
+    artifacts: ArtifactManager,
 }
 
 // ============================================================
@@ -131,6 +130,12 @@ struct PlayRequest {
 #[derive(Deserialize)]
 struct LoadSpotRequest {
     id: i64,
+}
+
+#[derive(Deserialize)]
+struct LibraryNodeQuery {
+    path: Option<String>,
+    view: Option<String>,
 }
 
 // --- Responses ---
@@ -231,39 +236,6 @@ fn make_bet_sizes(bet: &str, raise: &str) -> Result<BetSizeOptions, String> {
     BetSizeOptions::try_from((bet, raise))
 }
 
-fn action_label(a: &Action) -> String {
-    match a {
-        Action::None => "None".into(),
-        Action::Fold => "Fold".into(),
-        Action::Check => "Check".into(),
-        Action::Call => "Call".into(),
-        Action::Bet(n) => format!("Bet {}", n),
-        Action::Raise(n) => format!("Raise {}", n),
-        Action::AllIn(n) => format!("All-in {}", n),
-        Action::Chance(c) => format!("Deal {}", card_str(*c)),
-    }
-}
-
-fn action_type_str(a: &Action) -> String {
-    match a {
-        Action::Fold => "fold",
-        Action::Check => "check",
-        Action::Call => "call",
-        Action::Bet(_) => "bet",
-        Action::Raise(_) => "raise",
-        Action::AllIn(_) => "allin",
-        _ => "other",
-    }
-    .into()
-}
-
-fn action_amount(a: &Action) -> Option<i32> {
-    match a {
-        Action::Bet(n) | Action::Raise(n) | Action::AllIn(n) => Some(*n),
-        _ => None,
-    }
-}
-
 fn serialize_game(game: &PostFlopGame) -> Result<Vec<u8>, String> {
     let mut buf = Vec::new();
     save_data_into_std_write(game, "", &mut buf, Some(3))?;
@@ -274,145 +246,6 @@ fn deserialize_game(data: &[u8]) -> Result<PostFlopGame, String> {
     let mut cursor = Cursor::new(data);
     let (game, _memo): (PostFlopGame, String) = load_data_from_std_read(&mut cursor, None)?;
     Ok(game)
-}
-
-fn build_node_view(game: &mut PostFlopGame) -> NodeView {
-    let board: Vec<String> = game.current_board().iter().map(|&c| card_str(c)).collect();
-    let bets = game.total_bet_amount();
-    let pot = game.tree_config().starting_pot;
-    let effective_stack = game.tree_config().effective_stack;
-    let history_depth = game.history().len();
-
-    let empty = NodeView {
-        is_terminal: false,
-        is_chance: false,
-        current_player: 0,
-        player_name: String::new(),
-        board: board.clone(),
-        pot,
-        bets,
-        total_pot: pot + bets[0] + bets[1],
-        effective_stack,
-        history_depth,
-        actions: vec![],
-        range_equity: 0.0,
-        range_ev: 0.0,
-        hands: vec![],
-        grid: vec![],
-        possible_cards: vec![],
-    };
-
-    if game.is_terminal_node() {
-        return NodeView {
-            is_terminal: true,
-            ..empty
-        };
-    }
-
-    if game.is_chance_node() {
-        let mask = game.possible_cards();
-        let mut cards = Vec::new();
-        for i in 0..52u8 {
-            if mask & (1u64 << i) != 0 {
-                cards.push(card_str(i));
-            }
-        }
-        return NodeView {
-            is_chance: true,
-            possible_cards: cards,
-            ..empty
-        };
-    }
-
-    let player = game.current_player();
-    let player_name = if player == 0 { "OOP" } else { "IP" }.to_string();
-
-    game.cache_normalized_weights();
-
-    let actions_list = game.available_actions();
-    let strategy = game.strategy();
-    let equity = game.equity(player);
-    let ev = game.expected_values(player);
-    let ev_detail = game.expected_values_detail(player);
-    let cards = game.private_cards(player);
-    let num_hands = cards.len();
-    let num_actions = actions_list.len();
-    let card_strings = holes_to_strings(cards).unwrap();
-    let weights = game.normalized_weights(player);
-
-    let mut action_freqs = vec![0.0f64; num_actions];
-    let mut action_ev_sums = vec![0.0f64; num_actions];
-    let mut total_weight = 0.0f64;
-
-    for h in 0..num_hands {
-        let w = weights[h] as f64;
-        if w > 0.0 {
-            for a in 0..num_actions {
-                let s = strategy[a * num_hands + h] as f64;
-                action_freqs[a] += s * w;
-                action_ev_sums[a] += ev_detail[a * num_hands + h] as f64 * s * w;
-            }
-            total_weight += w;
-        }
-    }
-
-    let action_views: Vec<ActionView> = actions_list
-        .iter()
-        .enumerate()
-        .map(|(i, a)| ActionView {
-            index: i,
-            label: action_label(a),
-            action_type: action_type_str(a),
-            amount: action_amount(a),
-            frequency: if total_weight > 0.0 {
-                action_freqs[i] / total_weight
-            } else {
-                0.0
-            },
-            ev: if action_freqs[i] > 0.0 {
-                action_ev_sums[i] / action_freqs[i]
-            } else {
-                0.0
-            },
-        })
-        .collect();
-
-    let avg_equity = compute_average(&equity, weights);
-    let avg_ev = compute_average(&ev, weights);
-
-    let mut hand_indices: Vec<usize> = (0..num_hands)
-        .filter(|&h| weights[h] > 0.001)
-        .collect();
-    hand_indices.sort_by(|&a, &b| ev[b].partial_cmp(&ev[a]).unwrap_or(std::cmp::Ordering::Equal));
-
-    let hand_views: Vec<HandView> = hand_indices
-        .iter()
-        .map(|&h| HandView {
-            hand: card_strings[h].clone(),
-            equity: equity[h] as f64,
-            ev: ev[h] as f64,
-            weight: weights[h] as f64,
-            strategy: (0..num_actions)
-                .map(|a| strategy[a * num_hands + h] as f64)
-                .collect(),
-            ev_detail: (0..num_actions)
-                .map(|a| ev_detail[a * num_hands + h] as f64)
-                .collect(),
-        })
-        .collect();
-
-    let grid = build_grid(cards, weights, &strategy, num_actions, num_hands);
-
-    NodeView {
-        current_player: player,
-        player_name,
-        actions: action_views,
-        range_equity: avg_equity as f64,
-        range_ev: avg_ev as f64,
-        hands: hand_views,
-        grid,
-        ..empty
-    }
 }
 
 fn build_grid(
@@ -505,6 +338,356 @@ fn err_resp(msg: impl Into<String>) -> (StatusCode, Json<serde_json::Value>) {
         StatusCode::BAD_REQUEST,
         Json(serde_json::json!({ "error": msg.into() })),
     )
+}
+
+fn parse_path_query(path: Option<&str>) -> Result<Vec<i32>, String> {
+    let Some(raw) = path else {
+        return Ok(vec![]);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(vec![]);
+    }
+    trimmed
+        .split(',')
+        .map(|token| {
+            token
+                .trim()
+                .parse::<i32>()
+                .map_err(|_| format!("Invalid path segment '{}'", token.trim()))
+        })
+        .collect()
+}
+
+// ---- Compact binary node format ----
+// Stores raw float arrays instead of JSON. ~40KB per decision node vs ~150KB JSON.
+// PostgreSQL TOAST compresses BYTEA automatically (~10KB stored).
+
+fn build_compact_node(game: &mut PostFlopGame) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let board = game.current_board();
+    let bets = game.total_bet_amount();
+    let pot = game.tree_config().starting_pot;
+    let stack = game.tree_config().effective_stack;
+    let depth = game.history().len();
+    let is_terminal = game.is_terminal_node();
+    let is_chance = !is_terminal && game.is_chance_node();
+    let node_type: u8 = if is_terminal { 0 } else if is_chance { 1 } else { 2 };
+
+    // Header (shared by all node types)
+    buf.push(node_type);
+    buf.extend_from_slice(&(depth as u16).to_le_bytes());
+    buf.extend_from_slice(&pot.to_le_bytes());
+    buf.extend_from_slice(&bets[0].to_le_bytes());
+    buf.extend_from_slice(&bets[1].to_le_bytes());
+    buf.extend_from_slice(&stack.to_le_bytes());
+    buf.push(board.len() as u8);
+    for &c in board.iter() {
+        buf.push(c);
+    }
+
+    if is_terminal {
+        return buf;
+    }
+    if is_chance {
+        buf.extend_from_slice(&game.possible_cards().to_le_bytes());
+        return buf;
+    }
+
+    // Decision node
+    let player = game.current_player();
+    buf.push(player as u8);
+    game.cache_normalized_weights();
+
+    let actions = game.available_actions();
+    buf.push(actions.len() as u8);
+    for a in &actions {
+        let (atype, amount) = match a {
+            Action::Fold => (0u8, 0i32),
+            Action::Check => (1, 0),
+            Action::Call => (2, 0),
+            Action::Bet(n) => (3, *n),
+            Action::Raise(n) => (4, *n),
+            Action::AllIn(n) => (5, *n),
+            _ => (6, 0),
+        };
+        buf.push(atype);
+        buf.extend_from_slice(&amount.to_le_bytes());
+    }
+
+    let cards = game.private_cards(player);
+    let num_hands = cards.len();
+    let num_actions = actions.len();
+    buf.extend_from_slice(&(num_hands as u16).to_le_bytes());
+
+    for &(c1, c2) in cards {
+        buf.push(c1);
+        buf.push(c2);
+    }
+
+    // Raw f32 arrays — the bulk of the data
+    let weights = game.normalized_weights(player);
+    let strategy = game.strategy();
+    let equity = game.equity(player);
+    let ev = game.expected_values(player);
+    let ev_detail = game.expected_values_detail(player);
+
+    fn write_f32s(buf: &mut Vec<u8>, data: &[f32]) {
+        for &v in data {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    write_f32s(&mut buf, weights);                       // num_hands
+    write_f32s(&mut buf, &strategy);                     // num_actions * num_hands
+    write_f32s(&mut buf, &equity);                       // num_hands
+    write_f32s(&mut buf, &ev);                           // num_hands
+    write_f32s(&mut buf, &ev_detail);                    // num_actions * num_hands
+
+    debug_assert_eq!(strategy.len(), num_actions * num_hands);
+    debug_assert_eq!(ev_detail.len(), num_actions * num_hands);
+
+    buf
+}
+
+fn node_view_from_compact(data: &[u8]) -> Result<NodeView, String> {
+    let mut p = 0usize;
+
+    fn read_u8(d: &[u8], p: &mut usize) -> u8 { let v = d[*p]; *p += 1; v }
+    fn read_u16(d: &[u8], p: &mut usize) -> u16 {
+        let v = u16::from_le_bytes([d[*p], d[*p + 1]]); *p += 2; v
+    }
+    fn read_i32(d: &[u8], p: &mut usize) -> i32 {
+        let v = i32::from_le_bytes(d[*p..*p + 4].try_into().unwrap()); *p += 4; v
+    }
+    fn read_u64(d: &[u8], p: &mut usize) -> u64 {
+        let v = u64::from_le_bytes(d[*p..*p + 8].try_into().unwrap()); *p += 8; v
+    }
+    fn read_f32s(d: &[u8], p: &mut usize, n: usize) -> Vec<f32> {
+        let mut v = Vec::with_capacity(n);
+        for _ in 0..n {
+            v.push(f32::from_le_bytes(d[*p..*p + 4].try_into().unwrap()));
+            *p += 4;
+        }
+        v
+    }
+
+    let node_type = read_u8(data, &mut p);
+    let depth = read_u16(data, &mut p) as usize;
+    let pot = read_i32(data, &mut p);
+    let bet0 = read_i32(data, &mut p);
+    let bet1 = read_i32(data, &mut p);
+    let stack = read_i32(data, &mut p);
+    let board_len = read_u8(data, &mut p) as usize;
+    let board: Vec<String> = (0..board_len).map(|_| card_str(read_u8(data, &mut p))).collect();
+
+    let base = NodeView {
+        is_terminal: false,
+        is_chance: false,
+        current_player: 0,
+        player_name: String::new(),
+        board,
+        pot,
+        bets: [bet0, bet1],
+        total_pot: pot + bet0 + bet1,
+        effective_stack: stack,
+        history_depth: depth,
+        actions: vec![],
+        range_equity: 0.0,
+        range_ev: 0.0,
+        hands: vec![],
+        grid: vec![],
+        possible_cards: vec![],
+    };
+
+    if node_type == 0 {
+        return Ok(NodeView { is_terminal: true, ..base });
+    }
+    if node_type == 1 {
+        let mask = read_u64(data, &mut p);
+        let cards = (0..52u8).filter(|&i| mask & (1u64 << i) != 0).map(card_str).collect();
+        return Ok(NodeView { is_chance: true, possible_cards: cards, ..base });
+    }
+
+    // Decision node
+    let player = read_u8(data, &mut p) as usize;
+    let player_name = if player == 0 { "OOP" } else { "IP" }.to_string();
+    let num_actions = read_u8(data, &mut p) as usize;
+
+    let mut act_labels = Vec::with_capacity(num_actions);
+    let mut act_types = Vec::with_capacity(num_actions);
+    let mut act_amounts: Vec<Option<i32>> = Vec::with_capacity(num_actions);
+    for _ in 0..num_actions {
+        let atype = read_u8(data, &mut p);
+        let amount = read_i32(data, &mut p);
+        let (label, tstr, amt) = match atype {
+            0 => ("Fold".into(), "fold", None),
+            1 => ("Check".into(), "check", None),
+            2 => ("Call".into(), "call", None),
+            3 => (format!("Bet {}", amount), "bet", Some(amount)),
+            4 => (format!("Raise {}", amount), "raise", Some(amount)),
+            5 => (format!("All-in {}", amount), "allin", Some(amount)),
+            _ => ("Other".into(), "other", None),
+        };
+        act_labels.push(label);
+        act_types.push(tstr.to_string());
+        act_amounts.push(amt);
+    }
+
+    let num_hands = read_u16(data, &mut p) as usize;
+    let mut cards = Vec::with_capacity(num_hands);
+    for _ in 0..num_hands {
+        let c1 = read_u8(data, &mut p);
+        let c2 = read_u8(data, &mut p);
+        cards.push((c1, c2));
+    }
+
+    let weights = read_f32s(data, &mut p, num_hands);
+    let strategy = read_f32s(data, &mut p, num_actions * num_hands);
+    let equity = read_f32s(data, &mut p, num_hands);
+    let ev = read_f32s(data, &mut p, num_hands);
+    let ev_detail = read_f32s(data, &mut p, num_actions * num_hands);
+
+    // Compute action aggregate frequencies and EVs
+    let mut action_freqs = vec![0.0f64; num_actions];
+    let mut action_ev_sums = vec![0.0f64; num_actions];
+    let mut total_weight = 0.0f64;
+    for h in 0..num_hands {
+        let w = weights[h] as f64;
+        if w > 0.0 {
+            for a in 0..num_actions {
+                let s = strategy[a * num_hands + h] as f64;
+                action_freqs[a] += s * w;
+                action_ev_sums[a] += ev_detail[a * num_hands + h] as f64 * s * w;
+            }
+            total_weight += w;
+        }
+    }
+
+    let action_views: Vec<ActionView> = (0..num_actions)
+        .map(|i| ActionView {
+            index: i,
+            label: act_labels[i].clone(),
+            action_type: act_types[i].clone(),
+            amount: act_amounts[i],
+            frequency: if total_weight > 0.0 { action_freqs[i] / total_weight } else { 0.0 },
+            ev: if action_freqs[i] > 0.0 { action_ev_sums[i] / action_freqs[i] } else { 0.0 },
+        })
+        .collect();
+
+    // Weighted averages
+    let (mut eq_sum, mut ev_sum, mut w_sum) = (0.0f64, 0.0f64, 0.0f64);
+    for h in 0..num_hands {
+        let w = weights[h] as f64;
+        eq_sum += equity[h] as f64 * w;
+        ev_sum += ev[h] as f64 * w;
+        w_sum += w;
+    }
+    let avg_eq = if w_sum > 0.0 { eq_sum / w_sum } else { 0.0 };
+    let avg_ev = if w_sum > 0.0 { ev_sum / w_sum } else { 0.0 };
+
+    // Hands list
+    let card_strings: Vec<String> = cards
+        .iter()
+        .map(|&(c1, c2)| format!("{}{}", card_str(c1), card_str(c2)))
+        .collect();
+
+    let mut hand_indices: Vec<usize> = (0..num_hands).filter(|&h| weights[h] > 0.001).collect();
+    hand_indices.sort_by(|&a, &b| ev[b].partial_cmp(&ev[a]).unwrap_or(std::cmp::Ordering::Equal));
+
+    let hand_views: Vec<HandView> = hand_indices
+        .iter()
+        .map(|&h| HandView {
+            hand: card_strings[h].clone(),
+            equity: equity[h] as f64,
+            ev: ev[h] as f64,
+            weight: weights[h] as f64,
+            strategy: (0..num_actions).map(|a| strategy[a * num_hands + h] as f64).collect(),
+            ev_detail: (0..num_actions).map(|a| ev_detail[a * num_hands + h] as f64).collect(),
+        })
+        .collect();
+
+    let grid = build_grid(&cards, &weights, &strategy, num_actions, num_hands);
+
+    Ok(NodeView {
+        current_player: player,
+        player_name,
+        actions: action_views,
+        range_equity: avg_eq,
+        range_ev: avg_ev,
+        hands: hand_views,
+        grid,
+        ..base
+    })
+}
+
+async fn fetch_node(
+    state: &AppState,
+    spot_id: i64,
+    path: &[i32],
+    summary_only: bool,
+) -> Result<serde_json::Value, String> {
+    let data = state
+        .artifacts
+        .fetch_payload(&state.db, spot_id, path)
+        .await?;
+
+    let mut node_view = node_view_from_compact(&data)?;
+    if summary_only {
+        node_view.hands.clear();
+        node_view.grid.clear();
+    }
+    serde_json::to_value(&node_view).map_err(|e| format!("JSON error: {}", e))
+}
+
+async fn ensure_artifact_for_spot(state: &AppState, spot_id: i64) -> Result<(), String> {
+    let has_artifact = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM solve_artifacts WHERE spot_id = $1)",
+    )
+    .bind(spot_id)
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| format!("DB error: {}", e))?;
+
+    if has_artifact {
+        return Ok(());
+    }
+
+    let row = sqlx::query_as::<_, SpotRow>("SELECT id, game_data FROM spots WHERE id = $1")
+        .bind(spot_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|e| format!("DB error: {}", e))?
+        .ok_or_else(|| "Spot not found".to_string())?;
+
+    let game_data = row.game_data;
+    let artifact_root = state.artifacts.root_dir().to_path_buf();
+    let write_result = tokio::task::spawn_blocking(move || {
+        let mut game = deserialize_game(&game_data)?;
+        write_solve_artifact(&mut game, &artifact_root, spot_id, build_compact_node)
+    })
+    .await
+    .map_err(|e| format!("Artifact build task error: {}", e))??;
+
+    sqlx::query(
+        "INSERT INTO solve_artifacts (spot_id, artifact_version, index_path, data_path, node_count)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (spot_id) DO UPDATE
+         SET artifact_version = EXCLUDED.artifact_version,
+             index_path = EXCLUDED.index_path,
+             data_path = EXCLUDED.data_path,
+             node_count = EXCLUDED.node_count",
+    )
+    .bind(spot_id)
+    .bind(1_i32)
+    .bind(&write_result.index_path)
+    .bind(&write_result.data_path)
+    .bind(write_result.node_count as i32)
+    .execute(&state.db)
+    .await
+    .map_err(|e| format!("DB error while writing artifact metadata: {}", e))?;
+
+    state.artifacts.invalidate(spot_id);
+    Ok(())
 }
 
 // ============================================================
@@ -649,8 +832,8 @@ async fn start_solve(
             max_iterations: max_iter,
             exploitability: -1.0,
         };
-        inner.active_game = None;
         inner.active_spot_id = None;
+        inner.active_path = vec![];
         building_config = inner.building_config.clone();
         stop_flag = state.stop_flag.clone();
         stop_flag.store(false, Ordering::Relaxed);
@@ -691,13 +874,12 @@ async fn start_solve(
         }
         finalize(&mut game);
 
-        // Serialize the solved game
+        // Serialize the solved game for storage
         let game_data = match serialize_game(&game) {
             Ok(data) => data,
             Err(e) => {
                 eprintln!("Failed to serialize game: {}", e);
                 if let Ok(mut inner) = state_clone.inner.lock() {
-                    inner.active_game = Some(game);
                     inner.solve_status = SolveStatus::Done {
                         exploitability: final_exp,
                         iterations: final_iter,
@@ -720,14 +902,14 @@ async fn start_solve(
         let board_label = board_cards.join(" ");
         let label = format!("{} | pot:{} stk:{}", board_label, cfg.pot, cfg.stack);
 
-        // Save to database (block on async from blocking thread)
+        // Save spot to database, then stream nodes in batches
         let db = state_clone.db.clone();
         let rt = tokio::runtime::Handle::current();
         let db_result = rt.block_on(async {
             sqlx::query_scalar::<_, i64>(
                 "INSERT INTO spots (label, board, oop_range, ip_range, pot, stack, exploitability, iterations, game_data)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                 RETURNING id"
+                 RETURNING id",
             )
             .bind(&label)
             .bind(&cfg.board)
@@ -740,18 +922,65 @@ async fn start_solve(
             .bind(&game_data)
             .fetch_one(&db)
             .await
+            .map_err(|e| format!("DB: {}", e))
         });
 
-        if let Ok(mut inner) = state_clone.inner.lock() {
-            match db_result {
-                Ok(spot_id) => {
-                    inner.active_spot_id = Some(spot_id);
+        let spot_id = match db_result {
+            Ok(id) => id,
+            Err(e) => {
+                eprintln!("Failed to save spot: {}", e);
+                if let Ok(mut inner) = state_clone.inner.lock() {
+                    inner.solve_status = SolveStatus::Done {
+                        exploitability: final_exp,
+                        iterations: final_iter,
+                    };
                 }
-                Err(e) => {
-                    eprintln!("Failed to save spot to DB: {}", e);
+                return;
+            }
+        };
+
+        // Build immutable artifact files on disk and register metadata in Postgres.
+        let artifact_root = state_clone.artifacts.root_dir().to_path_buf();
+        eprintln!("Building artifacts for spot {}...", spot_id);
+        let artifact_result = write_solve_artifact(&mut game, &artifact_root, spot_id, build_compact_node);
+        match artifact_result {
+            Ok(written) => {
+                let meta_result = rt.block_on(async {
+                    sqlx::query(
+                        "INSERT INTO solve_artifacts (spot_id, artifact_version, index_path, data_path, node_count)
+                         VALUES ($1, $2, $3, $4, $5)
+                         ON CONFLICT (spot_id) DO UPDATE
+                         SET artifact_version = EXCLUDED.artifact_version,
+                             index_path = EXCLUDED.index_path,
+                             data_path = EXCLUDED.data_path,
+                             node_count = EXCLUDED.node_count",
+                    )
+                    .bind(spot_id)
+                    .bind(1_i32)
+                    .bind(&written.index_path)
+                    .bind(&written.data_path)
+                    .bind(written.node_count as i32)
+                    .execute(&db)
+                    .await
+                    .map_err(|e| format!("DB: {}", e))
+                });
+                if let Err(e) = meta_result {
+                    eprintln!("Failed to store artifact metadata: {}", e);
+                } else {
+                    state_clone.artifacts.invalidate(spot_id);
+                    eprintln!(
+                        "Built artifact with {} nodes for spot {}",
+                        written.node_count, spot_id
+                    );
                 }
             }
-            inner.active_game = Some(game);
+            Err(e) => eprintln!("Failed to build artifacts: {}", e),
+        }
+        drop(game);
+
+        if let Ok(mut inner) = state_clone.inner.lock() {
+            inner.active_spot_id = Some(spot_id);
+            inner.active_path = vec![];
             inner.solve_status = SolveStatus::Done {
                 exploitability: final_exp,
                 iterations: final_iter,
@@ -776,84 +1005,89 @@ async fn solve_status(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 async fn get_node(State(state): State<AppState>) -> impl IntoResponse {
-    let mut inner = state.inner.lock().unwrap();
-    let game = match inner.game_mut() {
-        Some(g) => g,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "No active game"})),
-            )
+    let (spot_id, path) = {
+        let inner = state.inner.lock().unwrap();
+        match inner.active_spot_id {
+            Some(id) => (id, inner.active_path.clone()),
+            None => return err_resp("No active spot"),
         }
     };
-    (StatusCode::OK, Json(serde_json::json!(build_node_view(game))))
+    match fetch_node(&state, spot_id, &path, false).await {
+        Ok(data) => (StatusCode::OK, Json(data)),
+        Err(msg) => err_resp(msg),
+    }
 }
 
 async fn play_action(
     State(state): State<AppState>,
     Json(req): Json<PlayRequest>,
 ) -> impl IntoResponse {
-    let mut inner = state.inner.lock().unwrap();
-    let game = match inner.game_mut() {
-        Some(g) => g,
-        None => return err_resp("No active game"),
+    let (spot_id, mut path) = {
+        let inner = state.inner.lock().unwrap();
+        match inner.active_spot_id {
+            Some(id) => (id, inner.active_path.clone()),
+            None => return err_resp("No active spot"),
+        }
     };
 
-    if game.is_terminal_node() {
-        return err_resp("Terminal node");
-    }
-
-    if game.is_chance_node() {
-        let cs = match &req.card {
-            Some(c) => c.clone(),
-            None => return err_resp("Chance node: provide 'card' field"),
-        };
-        let card = match card_from_str(&cs) {
-            Ok(c) => c,
+    let action = if let Some(cs) = &req.card {
+        match card_from_str(cs) {
+            Ok(c) => c as i32,
             Err(e) => return err_resp(format!("Invalid card: {}", e)),
-        };
-        let possible = game.possible_cards();
-        if possible & (1u64 << card) == 0 {
-            return err_resp(format!("Card {} not available", cs));
         }
-        game.play(card as usize);
+    } else if let Some(idx) = req.action {
+        idx as i32
     } else {
-        let idx = match req.action {
-            Some(i) => i,
-            None => return err_resp("Decision node: provide 'action' field"),
-        };
-        let num_actions = game.available_actions().len();
-        if idx >= num_actions {
-            return err_resp(format!("Invalid action index (0-{})", num_actions - 1));
-        }
-        game.play(idx);
-    }
+        return err_resp("Provide 'action' or 'card'");
+    };
 
-    (StatusCode::OK, Json(serde_json::json!(build_node_view(game))))
+    path.push(action);
+
+    match fetch_node(&state, spot_id, &path, false).await {
+        Ok(data) => {
+            state.inner.lock().unwrap().active_path = path;
+            (StatusCode::OK, Json(data))
+        }
+        Err(msg) => err_resp(msg),
+    }
 }
 
 async fn go_back(State(state): State<AppState>) -> impl IntoResponse {
-    let mut inner = state.inner.lock().unwrap();
-    let game = match inner.game_mut() {
-        Some(g) => g,
-        None => return err_resp("No active game"),
+    let (spot_id, mut path) = {
+        let inner = state.inner.lock().unwrap();
+        match inner.active_spot_id {
+            Some(id) => (id, inner.active_path.clone()),
+            None => return err_resp("No active spot"),
+        }
     };
-    let history = game.history().to_vec();
-    if history.is_empty() {
+    if path.is_empty() {
         return err_resp("Already at root");
     }
-    game.apply_history(&history[..history.len() - 1]);
-    (StatusCode::OK, Json(serde_json::json!(build_node_view(game))))
+    path.pop();
+    match fetch_node(&state, spot_id, &path, false).await {
+        Ok(data) => {
+            state.inner.lock().unwrap().active_path = path;
+            (StatusCode::OK, Json(data))
+        }
+        Err(msg) => err_resp(msg),
+    }
 }
 
 async fn go_root(State(state): State<AppState>) -> impl IntoResponse {
-    let mut inner = state.inner.lock().unwrap();
-    let game = match inner.game_mut() {
-        Some(g) => g,
-        None => return err_resp("No active game"),
+    let spot_id = {
+        let inner = state.inner.lock().unwrap();
+        match inner.active_spot_id {
+            Some(id) => id,
+            None => return err_resp("No active spot"),
+        }
     };
-    game.back_to_root();
-    (StatusCode::OK, Json(serde_json::json!(build_node_view(game))))
+    match fetch_node(&state, spot_id, &[], false).await {
+        Ok(data) => {
+            state.inner.lock().unwrap().active_path = vec![];
+            (StatusCode::OK, Json(data))
+        }
+        Err(msg) => err_resp(msg),
+    }
 }
 
 async fn validate_range(Json(req): Json<serde_json::Value>) -> impl IntoResponse {
@@ -886,6 +1120,44 @@ async fn list_spots(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
+async fn list_library_solves(State(state): State<AppState>) -> impl IntoResponse {
+    let solves = sqlx::query_as::<_, SpotMeta>(
+        "SELECT id, label, board, oop_range, ip_range, pot, stack, exploitability, iterations
+         FROM spots ORDER BY created_at DESC",
+    )
+    .fetch_all(&state.db)
+    .await;
+
+    match solves {
+        Ok(solves) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "solves": solves })),
+        ),
+        Err(e) => err_resp(format!("DB error: {}", e)),
+    }
+}
+
+async fn get_library_node(
+    Path(id): Path<i64>,
+    Query(query): Query<LibraryNodeQuery>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let path = match parse_path_query(query.path.as_deref()) {
+        Ok(p) => p,
+        Err(e) => return err_resp(e),
+    };
+
+    if let Err(e) = ensure_artifact_for_spot(&state, id).await {
+        return err_resp(format!("Failed to prepare solve artifact: {}", e));
+    }
+
+    let summary_only = matches!(query.view.as_deref(), Some("summary"));
+    match fetch_node(&state, id, &path, summary_only).await {
+        Ok(data) => (StatusCode::OK, Json(data)),
+        Err(msg) => err_resp(msg),
+    }
+}
+
 async fn load_spot(
     State(state): State<AppState>,
     Json(req): Json<LoadSpotRequest>,
@@ -897,59 +1169,45 @@ async fn load_spot(
         }
     }
 
-    // Fetch game data from DB
-    let row = sqlx::query_as::<_, SpotRow>(
-        "SELECT id, label, board, oop_range, ip_range, pot, stack, exploitability, iterations, game_data
-         FROM spots WHERE id = $1"
+    if let Err(e) = ensure_artifact_for_spot(&state, req.id).await {
+        return err_resp(format!("Failed to prepare solve artifact: {}", e));
+    }
+
+    // Fetch spot metadata for solve status
+    let meta = match sqlx::query_as::<_, SpotMeta>(
+        "SELECT id, label, board, oop_range, ip_range, pot, stack, exploitability, iterations
+         FROM spots WHERE id = $1",
     )
     .bind(req.id)
     .fetch_optional(&state.db)
-    .await;
-
-    let row = match row {
-        Ok(Some(r)) => r,
+    .await
+    {
+        Ok(Some(m)) => m,
         Ok(None) => return err_resp("Spot not found"),
         Err(e) => return err_resp(format!("DB error: {}", e)),
     };
 
-    // Deserialize the game (expensive, do in blocking task)
-    let game_data = row.game_data.clone();
-    let game = match tokio::task::spawn_blocking(move || deserialize_game(&game_data)).await {
-        Ok(Ok(g)) => g,
-        Ok(Err(e)) => return err_resp(format!("Failed to load game: {}", e)),
-        Err(e) => return err_resp(format!("Task error: {}", e)),
-    };
-
-    let mut inner = state.inner.lock().unwrap();
-    inner.active_game = Some(game);
-    inner.active_spot_id = Some(row.id);
-    inner.solve_status = SolveStatus::Done {
-        exploitability: row.exploitability,
-        iterations: row.iterations as u32,
-    };
-
-    let game = inner.game_mut().unwrap();
-    (StatusCode::OK, Json(serde_json::json!(build_node_view(game))))
+    // Fetch root node
+    match fetch_node(&state, req.id, &[], false).await {
+        Ok(data) => {
+            let mut inner = state.inner.lock().unwrap();
+            inner.active_spot_id = Some(req.id);
+            inner.active_path = vec![];
+            inner.solve_status = SolveStatus::Done {
+                exploitability: meta.exploitability,
+                iterations: meta.iterations as u32,
+            };
+            (StatusCode::OK, Json(data))
+        }
+        Err(msg) => err_resp(msg),
+    }
 }
 
-// Row type for loading full spot data
+// Row type for loading game data (used for on-demand node extraction of legacy spots)
 #[derive(sqlx::FromRow)]
 struct SpotRow {
+    #[allow(dead_code)]
     id: i64,
-    #[allow(dead_code)]
-    label: String,
-    #[allow(dead_code)]
-    board: String,
-    #[allow(dead_code)]
-    oop_range: String,
-    #[allow(dead_code)]
-    ip_range: String,
-    #[allow(dead_code)]
-    pot: i32,
-    #[allow(dead_code)]
-    stack: i32,
-    exploitability: f32,
-    iterations: i32,
     game_data: Vec<u8>,
 }
 
@@ -966,6 +1224,8 @@ async fn main() {
 
     let db = PgPoolOptions::new()
         .max_connections(5)
+        .max_lifetime(std::time::Duration::from_secs(1800))
+        .idle_timeout(std::time::Duration::from_secs(600))
         .connect(&database_url)
         .await
         .expect("Failed to connect to database");
@@ -974,20 +1234,33 @@ async fn main() {
     sqlx::query(include_str!("../migrations/001_create_spots.sql"))
         .execute(&db)
         .await
-        .expect("Failed to run migrations");
+        .expect("Failed to run migration 001");
+    sqlx::query(include_str!("../migrations/004_create_solve_artifacts.sql"))
+        .execute(&db)
+        .await
+        .expect("Failed to run migration 004");
+    sqlx::query(include_str!("../migrations/005_drop_legacy_nodes.sql"))
+        .execute(&db)
+        .await
+        .expect("Failed to run migration 005");
 
     println!("Connected to database");
+    let artifact_dir = std::env::var("SOLVE_ARTIFACT_DIR")
+        .unwrap_or_else(|_| "./artifacts".to_string());
+    let artifacts = ArtifactManager::new(PathBuf::from(artifact_dir))
+        .expect("Failed to initialize artifact manager");
 
     let state = AppState {
         inner: Arc::new(Mutex::new(AppInner {
-            active_game: None,
             active_spot_id: None,
+            active_path: vec![],
             building_game: None,
             building_config: None,
             solve_status: SolveStatus::Idle,
         })),
         stop_flag: Arc::new(AtomicBool::new(false)),
         db,
+        artifacts,
     };
 
     let cors = CorsLayer::new()
@@ -1007,6 +1280,8 @@ async fn main() {
         .route("/api/validate-range", post(validate_range))
         .route("/api/spots", get(list_spots))
         .route("/api/spots/load", post(load_spot))
+        .route("/api/library/solves", get(list_library_solves))
+        .route("/api/library/solves/{id}/node", get(get_library_node))
         .layer(cors)
         .with_state(state);
 

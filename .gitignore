@@ -3,4 +3,6 @@
 /app/frontend/node_modules
 /app/frontend/dist
 /app/.env
+/app/artifacts
+.DS_Store
 Cargo.lock
