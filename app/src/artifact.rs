@@ -5,10 +5,17 @@ use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use zstd::bulk;
 
 const INDEX_MAGIC: &[u8; 4] = b"PFSI";
 const DATA_MAGIC: &[u8; 4] = b"PFSD";
-const FORMAT_VERSION: u32 = 1;
+const INDEX_FORMAT_VERSION: u32 = 1;
+const DATA_FORMAT_V1: u32 = 1;
+const DATA_FORMAT_V2: u32 = 2;
+const CURRENT_DATA_FORMAT_VERSION: u32 = DATA_FORMAT_V2;
+const CODEC_RAW: u8 = 0;
+const CODEC_ZSTD: u8 = 1;
+const ZSTD_LEVEL: i32 = 3;
 
 #[derive(Clone)]
 pub struct ArtifactManager {
@@ -30,6 +37,7 @@ struct IndexEntry {
 
 struct SolveArtifact {
     entries: Vec<IndexEntry>,
+    data_format_version: u32,
     data_file: Mutex<File>,
 }
 
@@ -117,7 +125,7 @@ impl SolveArtifact {
             return Err("Invalid index file magic".to_string());
         }
         let version = read_u32_from_reader(&mut index_reader)?;
-        if version != FORMAT_VERSION {
+        if version != INDEX_FORMAT_VERSION {
             return Err(format!("Unsupported index version: {}", version));
         }
         let count = read_u64_from_reader(&mut index_reader)?;
@@ -138,12 +146,13 @@ impl SolveArtifact {
             return Err("Invalid data file magic".to_string());
         }
         let data_version = read_u32_from_reader(&mut data_file)?;
-        if data_version != FORMAT_VERSION {
+        if data_version != DATA_FORMAT_V1 && data_version != DATA_FORMAT_V2 {
             return Err(format!("Unsupported data version: {}", data_version));
         }
 
         Ok(Self {
             entries,
+            data_format_version: data_version,
             data_file: Mutex::new(data_file),
         })
     }
@@ -166,15 +175,31 @@ impl SolveArtifact {
                 stored_path.push(read_i32_from_reader(&mut *file)?);
             }
 
-            let payload_len = read_u32_from_reader(&mut *file)? as usize;
-            if stored_path == path {
-                let mut payload = vec![0u8; payload_len];
-                file.read_exact(&mut payload)
-                    .map_err(|e| format!("Read node payload: {}", e))?;
-                return Ok(payload);
+            if self.data_format_version == DATA_FORMAT_V1 {
+                let payload_len = read_u32_from_reader(&mut *file)? as usize;
+                if stored_path == path {
+                    let mut payload = vec![0u8; payload_len];
+                    file.read_exact(&mut payload)
+                        .map_err(|e| format!("Read node payload: {}", e))?;
+                    return Ok(payload);
+                }
+
+                file.seek(SeekFrom::Current(payload_len as i64))
+                    .map_err(|e| format!("Skip payload: {}", e))?;
+                continue;
             }
 
-            file.seek(SeekFrom::Current(payload_len as i64))
+            let codec = read_u8_from_reader(&mut *file)?;
+            let raw_len = read_u32_from_reader(&mut *file)? as usize;
+            let stored_len = read_u32_from_reader(&mut *file)? as usize;
+            if stored_path == path {
+                let mut payload = vec![0u8; stored_len];
+                file.read_exact(&mut payload)
+                    .map_err(|e| format!("Read node payload: {}", e))?;
+                return decode_payload(codec, raw_len, payload);
+            }
+
+            file.seek(SeekFrom::Current(stored_len as i64))
                 .map_err(|e| format!("Skip payload: {}", e))?;
         }
 
@@ -204,7 +229,7 @@ where
     );
     data_writer
         .write_all(DATA_MAGIC)
-        .and_then(|_| data_writer.write_all(&FORMAT_VERSION.to_le_bytes()))
+        .and_then(|_| data_writer.write_all(&CURRENT_DATA_FORMAT_VERSION.to_le_bytes()))
         .map_err(|e| format!("Write artifact data header: {}", e))?;
 
     let mut entries: Vec<IndexEntry> = Vec::new();
@@ -232,7 +257,7 @@ where
     );
     index_writer
         .write_all(INDEX_MAGIC)
-        .and_then(|_| index_writer.write_all(&FORMAT_VERSION.to_le_bytes()))
+        .and_then(|_| index_writer.write_all(&INDEX_FORMAT_VERSION.to_le_bytes()))
         .map_err(|e| format!("Write artifact index header: {}", e))?;
     index_writer
         .write_all(&(entries.len() as u64).to_le_bytes())
@@ -273,12 +298,23 @@ where
 {
     let path: Vec<i32> = game.history().iter().map(|&p| p as i32).collect();
     let payload = build_node(game);
+    let payload_len = payload.len();
+    let compressed = bulk::compress(&payload, ZSTD_LEVEL)
+        .map_err(|e| format!("Compress node payload: {}", e))?;
+    let (codec, stored_payload) = if compressed.len() < payload_len {
+        (CODEC_ZSTD, compressed)
+    } else {
+        (CODEC_RAW, payload)
+    };
 
     if path.len() > u16::MAX as usize {
         return Err("Path length exceeds artifact format limit".to_string());
     }
-    if payload.len() > u32::MAX as usize {
+    if payload_len > u32::MAX as usize {
         return Err("Node payload exceeds artifact format limit".to_string());
+    }
+    if stored_payload.len() > u32::MAX as usize {
+        return Err("Compressed node payload exceeds artifact format limit".to_string());
     }
 
     let offset = writer
@@ -293,8 +329,10 @@ where
             .map_err(|e| format!("Write path step: {}", e))?;
     }
     writer
-        .write_all(&(payload.len() as u32).to_le_bytes())
-        .and_then(|_| writer.write_all(&payload))
+        .write_all(&[codec])
+        .and_then(|_| writer.write_all(&(payload_len as u32).to_le_bytes()))
+        .and_then(|_| writer.write_all(&(stored_payload.len() as u32).to_le_bytes()))
+        .and_then(|_| writer.write_all(&stored_payload))
         .map_err(|e| format!("Write payload: {}", e))?;
 
     entries.push(IndexEntry {
@@ -375,6 +413,13 @@ fn read_u16_from_reader<R: Read>(r: &mut R) -> Result<u16, String> {
     Ok(u16::from_le_bytes(buf))
 }
 
+fn read_u8_from_reader<R: Read>(r: &mut R) -> Result<u8, String> {
+    let mut buf = [0u8; 1];
+    r.read_exact(&mut buf)
+        .map_err(|e| format!("Read u8: {}", e))?;
+    Ok(buf[0])
+}
+
 fn read_u32_from_reader<R: Read>(r: &mut R) -> Result<u32, String> {
     let mut buf = [0u8; 4];
     r.read_exact(&mut buf)
@@ -394,4 +439,22 @@ fn read_u64_from_reader<R: Read>(r: &mut R) -> Result<u64, String> {
     r.read_exact(&mut buf)
         .map_err(|e| format!("Read u64: {}", e))?;
     Ok(u64::from_le_bytes(buf))
+}
+
+fn decode_payload(codec: u8, raw_len: usize, payload: Vec<u8>) -> Result<Vec<u8>, String> {
+    match codec {
+        CODEC_RAW => {
+            if payload.len() != raw_len {
+                return Err(format!(
+                    "Corrupt raw payload length: expected {}, got {}",
+                    raw_len,
+                    payload.len()
+                ));
+            }
+            Ok(payload)
+        }
+        CODEC_ZSTD => bulk::decompress(&payload, raw_len)
+            .map_err(|e| format!("Decompress node payload: {}", e)),
+        _ => Err(format!("Unsupported payload codec: {}", codec)),
+    }
 }

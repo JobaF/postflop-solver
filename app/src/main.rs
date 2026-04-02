@@ -66,6 +66,8 @@ struct AppState {
     artifacts: ArtifactManager,
 }
 
+const ARTIFACT_VERSION: i32 = 2;
+
 // ============================================================
 // Types
 // ============================================================
@@ -640,15 +642,16 @@ async fn fetch_node(
 }
 
 async fn ensure_artifact_for_spot(state: &AppState, spot_id: i64) -> Result<(), String> {
-    let has_artifact = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM solve_artifacts WHERE spot_id = $1)",
+    let artifact_version = sqlx::query_scalar::<_, Option<i32>>(
+        "SELECT artifact_version FROM solve_artifacts WHERE spot_id = $1",
     )
     .bind(spot_id)
-    .fetch_one(&state.db)
+    .fetch_optional(&state.db)
     .await
-    .map_err(|e| format!("DB error: {}", e))?;
+    .map_err(|e| format!("DB error: {}", e))?
+    .flatten();
 
-    if has_artifact {
+    if artifact_version.unwrap_or_default() >= ARTIFACT_VERSION {
         return Ok(());
     }
 
@@ -678,7 +681,7 @@ async fn ensure_artifact_for_spot(state: &AppState, spot_id: i64) -> Result<(), 
              node_count = EXCLUDED.node_count",
     )
     .bind(spot_id)
-    .bind(1_i32)
+    .bind(ARTIFACT_VERSION)
     .bind(&write_result.index_path)
     .bind(&write_result.data_path)
     .bind(write_result.node_count as i32)
@@ -956,7 +959,7 @@ async fn start_solve(
                              node_count = EXCLUDED.node_count",
                     )
                     .bind(spot_id)
-                    .bind(1_i32)
+                    .bind(ARTIFACT_VERSION)
                     .bind(&written.index_path)
                     .bind(&written.data_path)
                     .bind(written.node_count as i32)
