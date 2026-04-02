@@ -2,6 +2,8 @@
 # Start both the Rust API backend and Svelte frontend dev server.
 # Press Ctrl+C to stop both.
 
+export PATH="$HOME/.cargo/bin:$PATH"
+
 trap 'kill 0' EXIT
 
 echo "Starting Rust API on :3000..."

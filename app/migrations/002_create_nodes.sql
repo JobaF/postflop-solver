@@ -1,0 +1,6 @@
+CREATE TABLE IF NOT EXISTS nodes (
+    id       BIGSERIAL PRIMARY KEY,
+    spot_id  BIGINT NOT NULL REFERENCES spots(id) ON DELETE CASCADE,
+    path     INTEGER[] NOT NULL,
+    node_data BYTEA NOT NULL
+);
