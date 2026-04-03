@@ -36,7 +36,7 @@
   <div class="board-bar">
     <div class="board-cards">
       {#each node.board as c (c)}
-        <span class="card {suitClass(c)}">{c[0]}{suitSymbol(c[1])}</span>
+        <span class="card playing-card {suitClass(c)}">{c[0]}{suitSymbol(c[1])}</span>
       {/each}
     </div>
     <div class="nav-info">

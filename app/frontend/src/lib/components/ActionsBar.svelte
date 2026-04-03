@@ -1,8 +1,9 @@
 <script lang="ts">
   import type { ActionView, NodeView } from '../types'
+  import { onDestroy } from 'svelte'
   import { api } from '../api'
   import { formatActionLabel, formatActionPotPercent, getActionColor, isActionUsed } from '../helpers'
-  import { actionColors, breadcrumb, currentNode } from '../stores'
+  import { actionColors, breadcrumb, currentNode, hoveredActionIndex } from '../stores'
 
   $: node = $currentNode as NodeView | null
   $: colors = $actionColors
@@ -29,11 +30,16 @@
   async function playAction(index: number, label: string): Promise<void> {
     if (!node || !node.actions || !node.actions[index])
       return
+    $hoveredActionIndex = null
     const n = await api.play({ action: index })
     $breadcrumb = [...$breadcrumb, label]
     $currentNode = n
     $actionColors = (n.actions || []).map((a, i) => getActionColor(a, i))
   }
+
+  onDestroy(() => {
+    $hoveredActionIndex = null
+  })
 </script>
 
 {#if node && visibleActions.length > 0}
@@ -43,6 +49,8 @@
       <div
         class="action-btn"
         on:click={() => playAction(item.index, item.breadcrumbLabel)}
+        on:mouseenter={() => $hoveredActionIndex = item.index}
+        on:mouseleave={() => $hoveredActionIndex = null}
         style="border-bottom: 3px solid {item.color}"
       >
         <div class="a-head">

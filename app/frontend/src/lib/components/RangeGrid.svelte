@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { ActionView, GridCell, NodeView } from '../types'
-  import { buildGradient, formatActionLabel, getActionColor, isActionUsed } from '../helpers'
-  import { actionColors, currentNode } from '../stores'
+  import { ACTION_HOVER_MATCH_THRESHOLD, buildGradient, formatActionLabel, getActionColor, isActionUsed } from '../helpers'
+  import { actionColors, currentNode, hoveredActionIndex, hoveredMatrixLabels } from '../stores'
 
   const RANKS = 'AKQJT98765432'
 
@@ -9,6 +9,8 @@
   $: colors = $actionColors
   $: grid = node?.grid || []
   $: actions = node?.actions || [] as ActionView[]
+  $: hoveredAction = $hoveredActionIndex
+  $: hoveredLabels = $hoveredMatrixLabels
   $: totalPot = node?.total_pot || 0
   $: visibleActions = actions
     .map((action, index) => ({
@@ -19,20 +21,39 @@
     }))
     .filter(({ action }) => isActionUsed(action))
 
-  function cellStyle(cell: GridCell): string {
+  function cellStyle(cell: GridCell, actionIndex: number | null): string {
     if (cell.combos < 0.001)
       return ''
+    if (actionIndex !== null && actionIndex < actions.length) {
+      const freq = Math.max(0, Math.min(1, cell.strategy[actionIndex] || 0))
+      const pct = (freq * 100).toFixed(1)
+      const color = colors[actionIndex] || getActionColor(actions[actionIndex], actionIndex)
+      return `background: linear-gradient(to right, ${color} 0% ${pct}%, var(--bg3) ${pct}% 100%)`
+    }
     return `background: ${buildGradient(cell.strategy, colors)}`
   }
 
-  function cellTitle(cell: GridCell): string {
+  function cellTitle(cell: GridCell, actionIndex: number | null): string {
     let tip = `${cell.label} (${cell.combos.toFixed(1)} combos)\n`
+    if (actionIndex !== null && actionIndex < actions.length) {
+      const item = visibleActions.find(a => a.index === actionIndex)
+      const freq = cell.strategy[actionIndex] || 0
+      if (item)
+        tip += `${item.label}: ${(freq * 100).toFixed(0)}%\n`
+      return tip
+    }
     for (const item of visibleActions) {
       const freq = cell.strategy[item.index] || 0
       if (freq > 0.001)
         tip += `${item.label}: ${(freq * 100).toFixed(0)}%\n`
     }
     return tip
+  }
+
+  function isDimmed(cell: GridCell, labels: string[] | null, actionIndex: number | null): boolean {
+    const dimByCategory = !!labels && labels.length > 0 && !labels.includes(cell.label)
+    const dimByAction = actionIndex !== null && (cell.strategy[actionIndex] || 0) < ACTION_HOVER_MATCH_THRESHOLD
+    return dimByCategory || dimByAction
   }
 </script>
 
@@ -52,8 +73,9 @@
             <div
               class="grid-cell"
               class:pair={r === c}
-              style={cellStyle(cell)}
-              title={cellTitle(cell)}
+              class:dimmed={isDimmed(cell, hoveredLabels, hoveredAction)}
+              style={cellStyle(cell, hoveredAction)}
+              title={cellTitle(cell, hoveredAction)}
             >{cell.label}</div>
           {/if}
         {/each}

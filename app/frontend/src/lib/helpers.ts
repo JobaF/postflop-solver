@@ -20,6 +20,7 @@ export function suitClass(c: string): string {
 
 const BET_COLORS = ['#ffa726', '#ef5350', '#ab47bc', '#ff7043', '#e91e63', '#00bcd4']
 const ACTION_USED_EPSILON = 0.001
+export const ACTION_HOVER_MATCH_THRESHOLD = 0.02
 
 export function getActionColor(action: ActionView, index: number): string {
   const t = action.action_type
