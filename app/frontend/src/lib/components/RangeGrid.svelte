@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { ActionView, GridCell, NodeView } from '../types'
-  import { buildGradient } from '../helpers'
+  import { buildGradient, formatActionLabel, getActionColor, isActionUsed } from '../helpers'
   import { actionColors, currentNode } from '../stores'
 
   const RANKS = 'AKQJT98765432'
@@ -9,6 +9,15 @@
   $: colors = $actionColors
   $: grid = node?.grid || []
   $: actions = node?.actions || [] as ActionView[]
+  $: totalPot = node?.total_pot || 0
+  $: visibleActions = actions
+    .map((action, index) => ({
+      action,
+      index,
+      label: formatActionLabel(action, totalPot),
+      color: colors[index] || getActionColor(action, index),
+    }))
+    .filter(({ action }) => isActionUsed(action))
 
   function cellStyle(cell: GridCell): string {
     if (cell.combos < 0.001)
@@ -18,8 +27,10 @@
 
   function cellTitle(cell: GridCell): string {
     let tip = `${cell.label} (${cell.combos.toFixed(1)} combos)\n`
-    for (let a = 0; a < actions.length; a++) {
-      tip += `${actions[a].label}: ${(cell.strategy[a] * 100).toFixed(0)}%\n`
+    for (const item of visibleActions) {
+      const freq = cell.strategy[item.index] || 0
+      if (freq > 0.001)
+        tip += `${item.label}: ${(freq * 100).toFixed(0)}%\n`
     }
     return tip
   }
@@ -49,10 +60,10 @@
       {/each}
     </div>
     <div class="legend">
-      {#each actions as a, i (a.label)}
+      {#each visibleActions as item (item.action.index)}
         <div class="legend-item">
-          <div class="legend-swatch" style="background:{colors[i]}"></div>
-          {a.label}
+          <div class="legend-swatch" style="background:{item.color}"></div>
+          {item.label}
         </div>
       {/each}
     </div>

@@ -1,10 +1,13 @@
 <script lang="ts">
   import type { ActionView, HandView, NodeView, SortCol } from '../types'
+  import { formatActionLabel, isActionUsed } from '../helpers'
   import { actionColors, currentNode } from '../stores'
 
   $: node = $currentNode as NodeView | null
   $: colors = $actionColors
   $: actions = node?.actions || [] as ActionView[]
+  $: totalPot = node?.total_pot || 0
+  $: actionLabels = actions.map(action => formatActionLabel(action, totalPot))
 
   let filter = ''
   let sortCol: SortCol = 'ev'
@@ -63,10 +66,10 @@
           <td>
             <div class="strat-bar">
               {#each h.strategy as s, a (a)}
-                {#if s > 0.001 && a < actions.length}
+                {#if s > 0.001 && a < actions.length && isActionUsed(actions[a])}
                   <div
                     style="width:{(s * 100).toFixed(1)}%;background:{colors[a]}"
-                    title="{actions[a].label}: {(s * 100).toFixed(0)}%"
+                    title="{actionLabels[a]}: {(s * 100).toFixed(0)}%"
                   ></div>
                 {/if}
               {/each}
@@ -74,8 +77,8 @@
           </td>
           <td class="details">
             {#each h.strategy as s, a (a)}
-              {#if s > 0.005 && a < actions.length}
-                <span>{actions[a].label}: {(s * 100).toFixed(0)}% ({h.ev_detail[a].toFixed(1)})</span>
+              {#if s > 0.005 && a < actions.length && isActionUsed(actions[a])}
+                <span>{actionLabels[a]}: {(s * 100).toFixed(0)}% ({h.ev_detail[a].toFixed(1)})</span>
               {/if}
             {/each}
           </td>

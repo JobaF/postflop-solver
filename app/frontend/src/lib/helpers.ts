@@ -19,6 +19,7 @@ export function suitClass(c: string): string {
 }
 
 const BET_COLORS = ['#ffa726', '#ef5350', '#ab47bc', '#ff7043', '#e91e63', '#00bcd4']
+const ACTION_USED_EPSILON = 0.001
 
 export function getActionColor(action: ActionView, index: number): string {
   const t = action.action_type
@@ -31,6 +32,32 @@ export function getActionColor(action: ActionView, index: number): string {
   if (t === 'allin')
     return '#e91e63'
   return BET_COLORS[index % BET_COLORS.length]
+}
+
+function capitalizeActionType(actionType: string): string {
+  if (actionType === 'allin')
+    return 'All-in'
+  return actionType.charAt(0).toUpperCase() + actionType.slice(1)
+}
+
+export function isActionUsed(action: ActionView): boolean {
+  return action.frequency > ACTION_USED_EPSILON
+}
+
+export function formatActionPotPercent(action: ActionView, totalPot: number): string | null {
+  if (!action.amount || totalPot <= 0)
+    return null
+  const pct = action.amount / totalPot * 100
+  const digits = pct >= 100 ? 0 : 1
+  return `${pct.toFixed(digits)}% Pot`
+}
+
+export function formatActionLabel(action: ActionView, totalPot: number): string {
+  const base = capitalizeActionType(action.action_type)
+  const pct = formatActionPotPercent(action, totalPot)
+  if (!pct)
+    return base
+  return `${base} ${pct}`
 }
 
 export function buildGradient(strategy: number[], colors: string[]): string {
@@ -50,24 +77,24 @@ export const PRESETS: Record<string, Preset> = {
   'srp': {
     oop: '66+,A2s+,K9s+,Q9s+,J9s+,T8s+,97s+,86s+,76s,65s,54s,ATo+,KTo+,QTo+,JTo',
     ip: 'QQ-22,AQs-A2s,ATo+,K5s+,KJo+,Q8s+,J8s+,T7s+,96s+,86s+,75s+,64s+,53s+',
-    pot: 60,
-    stack: 970,
+    pot: 55,
+    stack: 975,
     bet: '33%, 75%, 150%',
     raise: '3x',
   },
   '3bp': {
     oop: 'QQ+,AKs,AQs,AJs,ATs,A5s-A2s,KQs,KJs,76s,65s,54s,AKo',
     ip: 'JJ-22,AQs-A2s,KQs-K9s,QJs-Q9s,JTs-J9s,T9s-T8s,98s-97s,87s-86s,76s-75s,65s,AQo-AJo,KQo',
-    pot: 200,
-    stack: 900,
+    pot: 225,
+    stack: 890,
     bet: '33%, 75%, 150%',
     raise: '3x',
   },
   '4bp': {
     oop: 'AA,KK,QQ,AKs,AQs,AKo',
     ip: 'KK-JJ,AKs,AQs,AJs,AKo,AQo',
-    pot: 480,
-    stack: 760,
+    pot: 450,
+    stack: 780,
     bet: '33%, 75%, 150%',
     raise: '3x',
   },
