@@ -79,29 +79,31 @@
 
 {#if grid.length > 0}
   <div class="grid-panel">
-    <div class="range-grid">
-      <div class="grid-header"></div>
-      {#each RANKS as c (c)}
-        <div class="grid-header">{c}</div>
-      {/each}
-      {#each grid as row, r (r)}
-        <div class="grid-header">{RANKS[r]}</div>
-        {#each row as cell, c (c)}
-          {#if cell.combos < 0.001}
-            <div class="grid-cell empty" title={cell.label}>{cell.label}</div>
-          {:else}
-            <div
-              class="grid-cell"
-              class:pair={r === c}
-              class:dimmed={isDimmed(cell, hoveredLabels, hoveredAction)}
-              title={cellTitle(cell, hoveredAction)}
-            >
-              <div class="grid-cell-fill" style={cellFillStyle(cell, hoveredAction)}></div>
-              <span class="grid-cell-label">{cell.label}</span>
-            </div>
-          {/if}
+    <div class="range-grid-area">
+      <div class="range-grid">
+        <div class="grid-header"></div>
+        {#each RANKS as c (c)}
+          <div class="grid-header">{c}</div>
         {/each}
-      {/each}
+        {#each grid as row, r (r)}
+          <div class="grid-header">{RANKS[r]}</div>
+          {#each row as cell, c (c)}
+            {#if cell.combos < 0.001}
+              <div class="grid-cell empty" title={cell.label}>{cell.label}</div>
+            {:else}
+              <div
+                class="grid-cell"
+                class:pair={r === c}
+                class:dimmed={isDimmed(cell, hoveredLabels, hoveredAction)}
+                title={cellTitle(cell, hoveredAction)}
+              >
+                <div class="grid-cell-fill" style={cellFillStyle(cell, hoveredAction)}></div>
+                <span class="grid-cell-label">{cell.label}</span>
+              </div>
+            {/if}
+          {/each}
+        {/each}
+      </div>
     </div>
     <div class="legend">
       {#each visibleActions as item (item.action.index)}
