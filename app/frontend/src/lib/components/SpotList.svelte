@@ -5,11 +5,14 @@
   import { getActionColor } from '../helpers'
   import {
     actionColors,
+    activePath,
+    activeSpotId,
     appView,
     breadcrumb,
     canSolve,
     currentNode,
     errorMsg,
+    handsPanelTab,
     resetComboCoverage,
     solveInfo,
     statusText,
@@ -37,6 +40,9 @@
       const node = await api.loadSpot(id)
       $currentNode = node
       $breadcrumb = ['Root']
+      $activeSpotId = id
+      $activePath = []
+      $handsPanelTab = 'hands'
       resetComboCoverage()
       $actionColors = (node.actions || []).map((a, i) => getActionColor(a, i))
       $appView = 'browser'

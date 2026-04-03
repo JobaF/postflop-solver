@@ -2,7 +2,7 @@
   import type { NodeView } from '../types'
   import { api } from '../api'
   import { formatCardSmall, getActionColor, suitClass } from '../helpers'
-  import { actionColors, breadcrumb, currentNode, pushComboCoverageSnapshot } from '../stores'
+  import { actionColors, activePath, breadcrumb, cardToPathIndex, currentNode, pushComboCoverageSnapshot } from '../stores'
 
   const SUIT_ORDER = ['c', 'd', 'h', 's']
   const SUIT_LABELS: Record<string, string> = {
@@ -31,6 +31,9 @@
     const n = await api.play({ card: cardStr })
     pushComboCoverageSnapshot()
     $breadcrumb = [...$breadcrumb, cardStr]
+    const pathStep = cardToPathIndex(cardStr)
+    if (pathStep !== null)
+      $activePath = [...$activePath, pathStep]
     $currentNode = n
     $actionColors = (n.actions || []).map((a, i) => getActionColor(a, i))
   }

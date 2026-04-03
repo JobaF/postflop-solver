@@ -140,6 +140,12 @@ struct LibraryNodeQuery {
     view: Option<String>,
 }
 
+#[derive(Serialize)]
+struct ActiveContextResponse {
+    spot_id: i64,
+    path: Vec<i32>,
+}
+
 // --- Responses ---
 
 #[derive(Serialize)]
@@ -1021,6 +1027,20 @@ async fn get_node(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
+async fn get_active_context(State(state): State<AppState>) -> impl IntoResponse {
+    let inner = state.inner.lock().unwrap();
+    match inner.active_spot_id {
+        Some(spot_id) => (
+            StatusCode::OK,
+            Json(serde_json::json!(ActiveContextResponse {
+                spot_id,
+                path: inner.active_path.clone(),
+            })),
+        ),
+        None => err_resp("No active spot"),
+    }
+}
+
 async fn play_action(
     State(state): State<AppState>,
     Json(req): Json<PlayRequest>,
@@ -1276,6 +1296,7 @@ async fn main() {
         .route("/api/solve", post(start_solve))
         .route("/api/solve/stop", post(stop_solve))
         .route("/api/solve/status", get(solve_status))
+        .route("/api/active-context", get(get_active_context))
         .route("/api/node", get(get_node))
         .route("/api/play", post(play_action))
         .route("/api/back", post(go_back))
@@ -1284,11 +1305,11 @@ async fn main() {
         .route("/api/spots", get(list_spots))
         .route("/api/spots/load", post(load_spot))
         .route("/api/library/solves", get(list_library_solves))
-        .route("/api/library/solves/{id}/node", get(get_library_node))
+        .route("/api/library/solves/:id/node", get(get_library_node))
         .layer(cors)
         .with_state(state);
 
-    let port = 3000;
+    let port = 3001;
     println!("=== Postflop Solver API ===");
     println!("API running at http://localhost:{}", port);
 

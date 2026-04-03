@@ -3,6 +3,33 @@ import { derived, writable } from 'svelte/store'
 
 export const currentNode = writable<NodeView | null>(null)
 export const breadcrumb = writable<string[]>(['Root'])
+export const activePath = writable<number[]>([])
+export const activeSpotId = writable<number | null>(null)
+
+export type HandsPanelTab = 'hands' | 'filters' | 'runouts'
+export interface RunoutActionDef {
+  key: string
+  label: string
+  color: string
+}
+export interface RunoutSegment {
+  key: string
+  value: number
+  color: string
+}
+export interface RunoutCardBar {
+  card: string
+  segments: RunoutSegment[]
+  tooltip: string
+}
+
+export const handsPanelTab = writable<HandsPanelTab>('hands')
+export const runoutChartLoading = writable(false)
+export const runoutChartError = writable('')
+export const runoutChartLegend = writable<RunoutActionDef[]>([])
+export const runoutChartBars = writable<RunoutCardBar[]>([])
+export const hoveredRunoutCard = writable<string | null>(null)
+
 export const actionColors = writable<string[]>([])
 export const statusText = writable('Ready')
 export const errorMsg = writable('')
@@ -13,6 +40,19 @@ export const canSolve = writable(false)
 export const appView = writable<AppView>('empty')
 export const hoveredMatrixLabels = writable<string[] | null>(null)
 export const hoveredActionIndex = writable<number | null>(null)
+
+const CARD_RANKS = '23456789TJQKA'
+const CARD_SUITS = 'cdhs'
+
+export function cardToPathIndex(card: string): number | null {
+  if (!card || card.length < 2)
+    return null
+  const rank = CARD_RANKS.indexOf(card[0])
+  const suit = CARD_SUITS.indexOf(card[1])
+  if (rank < 0 || suit < 0)
+    return null
+  return rank * 4 + suit
+}
 
 type PlayerIndex = 0 | 1
 type LabelCoverage = Record<string, number>

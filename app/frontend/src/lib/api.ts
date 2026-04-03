@@ -7,9 +7,24 @@ async function request<T>(url: string, body?: unknown): Promise<T> {
     ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
     : { method: 'GET' }
   const resp = await fetch(BASE + url, opts)
-  const data = await resp.json()
-  if (!resp.ok || data.error)
-    throw new Error(data.error || `HTTP ${resp.status}`)
+  const raw = await resp.text()
+  let data: any = null
+
+  if (raw) {
+    try {
+      data = JSON.parse(raw)
+    }
+    catch {
+      if (!resp.ok)
+        throw new Error(`HTTP ${resp.status}: ${resp.statusText || 'Request failed'}`)
+      throw new Error(`Invalid JSON response from ${url}`)
+    }
+  }
+
+  if (!resp.ok)
+    throw new Error(data?.error || `HTTP ${resp.status}: ${resp.statusText || 'Request failed'}`)
+  if (data?.error)
+    throw new Error(data.error)
   return data as T
 }
 
@@ -43,7 +58,17 @@ export const api = {
   solve: (params: SolveParams) => request<{ message: string }>('/solve', params),
   solveStop: () => request<{ message: string }>('/solve/stop', {}),
   solveStatus: () => request<SolveStatusResponse>('/solve/status'),
+  getActiveContext: () => request<{ spot_id: number, path: number[] }>('/active-context'),
   getNode: () => request<NodeView>('/node'),
+  libraryNode: (spotId: number, path: number[], view?: 'summary') => {
+    const params = new URLSearchParams()
+    if (path.length > 0)
+      params.set('path', path.join(','))
+    if (view)
+      params.set('view', view)
+    const qs = params.toString()
+    return request<NodeView>(`/library/solves/${spotId}/node${qs ? `?${qs}` : ''}`)
+  },
   play: (body: { action?: number, card?: string }) => request<NodeView>('/play', body),
   back: () => request<NodeView>('/back', {}),
   root: () => request<NodeView>('/root', {}),

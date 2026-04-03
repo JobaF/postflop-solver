@@ -3,11 +3,14 @@
   import { getActionColor, PRESETS } from '../helpers'
   import {
     actionColors,
+    activePath,
+    activeSpotId,
     appView,
     breadcrumb,
     canSolve,
     currentNode,
     errorMsg,
+    handsPanelTab,
     isSolving,
     resetComboCoverage,
     solveInfo,
@@ -110,10 +113,19 @@
         $canSolve = true
         $statusText = 'Solved'
         $breadcrumb = ['Root']
+        $activePath = []
+        $handsPanelTab = 'hands'
         const node = await api.getNode()
         resetComboCoverage()
         $currentNode = node
         $actionColors = (node.actions || []).map((a, i) => getActionColor(a, i))
+        try {
+          const spots = await api.listSpots()
+          $activeSpotId = spots.active_id
+        }
+        catch {
+          $activeSpotId = null
+        }
         $appView = 'browser'
       }
     }

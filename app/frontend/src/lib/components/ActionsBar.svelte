@@ -5,6 +5,7 @@
   import { formatActionLabel, formatActionPotPercent, getActionColor, isActionUsed } from '../helpers'
   import {
     actionColors,
+    activePath,
     breadcrumb,
     currentNode,
     hoveredActionIndex,
@@ -40,6 +41,7 @@
     const n = await api.play({ action: index })
     pushComboCoverageFromAction(node, index)
     $breadcrumb = [...$breadcrumb, label]
+    $activePath = [...$activePath, index]
     $currentNode = n
     $actionColors = (n.actions || []).map((a, i) => getActionColor(a, i))
   }

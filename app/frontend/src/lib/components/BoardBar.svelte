@@ -4,6 +4,7 @@
   import { getActionColor, suitClass, suitSymbol } from '../helpers'
   import {
     actionColors,
+    activePath,
     breadcrumb,
     currentNode,
     popComboCoverageSnapshot,
@@ -17,6 +18,7 @@
     const n = await api.root()
     $currentNode = n
     $breadcrumb = ['Root']
+    $activePath = []
     resetComboCoverage()
     $actionColors = (n.actions || []).map((a, i) => getActionColor(a, i))
   }
@@ -25,6 +27,8 @@
     const n = await api.back()
     if ($breadcrumb.length > 1)
       $breadcrumb = $breadcrumb.slice(0, -1)
+    if ($activePath.length > 0)
+      $activePath = $activePath.slice(0, -1)
     popComboCoverageSnapshot()
     $currentNode = n
     $actionColors = (n.actions || []).map((a, i) => getActionColor(a, i))
@@ -37,6 +41,7 @@
     }
     $currentNode = n
     $breadcrumb = $breadcrumb.slice(0, depth + 1)
+    $activePath = $activePath.slice(0, depth)
     trimComboCoverageToDepth(depth)
     $actionColors = ((n?.actions) || []).map((a, i) => getActionColor(a, i))
   }

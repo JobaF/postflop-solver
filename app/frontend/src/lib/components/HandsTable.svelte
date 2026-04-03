@@ -1,8 +1,22 @@
 <script lang="ts">
+  import type { RunoutActionDef, RunoutCardBar } from '../stores'
   import type { ActionView, HandView, NodeView, SortCol } from '../types'
   import { onDestroy } from 'svelte'
-  import { formatActionLabel, isActionUsed } from '../helpers'
-  import { actionColors, currentNode, hoveredMatrixLabels } from '../stores'
+  import { api } from '../api'
+  import { formatActionLabel, formatCardSmall, getActionColor, isActionUsed, suitClass } from '../helpers'
+  import {
+    actionColors,
+    activePath,
+    activeSpotId,
+    currentNode,
+    handsPanelTab,
+    hoveredMatrixLabels,
+    hoveredRunoutCard,
+    runoutChartBars,
+    runoutChartError,
+    runoutChartLegend,
+    runoutChartLoading,
+  } from '../stores'
 
   interface ActionMeta {
     index: number
@@ -34,7 +48,17 @@
     drawCategory: string
   }
 
+  interface StreetCardContext {
+    chancePath: number[]
+    suffixPath: number[]
+    possibleCards: string[]
+    currentCard: string
+    targetBoardLength: number
+  }
+
   const RANKS = '23456789TJQKA'
+  const SUITS = 'cdhs'
+  const RUNOUT_MAX_PARALLEL_REQUESTS = 10
 
   const HAND_CATEGORY_DEFS: CategoryDef[] = [
     { key: 'set', label: 'Set' },
@@ -83,10 +107,17 @@
   let filter = ''
   let sortCol: SortCol = 'ev'
   let sortDir = -1
-  let activeTab: 'hands' | 'filters' = 'hands'
   let filterMode: 'include' | 'exclude' = 'include'
   let hoveredBucketKey: string | null = null
   let lockedBucketKey: string | null = null
+  let runoutLoading = false
+  let runoutError = ''
+  let runoutLegend: RunoutActionDef[] = []
+  let runoutBars: RunoutCardBar[] = []
+  let hoveredRunoutBar: RunoutCardBar | null = null
+  let runoutLegendByKey: Record<string, RunoutActionDef> = {}
+  let runoutRequestSeq = 0
+  let runoutCacheKey = ''
 
   $: hands = sortAndFilter(node?.hands || [], filter, sortCol, sortDir)
   $: totalWeight = (node?.hands || []).reduce((sum, hand) => sum + hand.weight, 0)
@@ -98,15 +129,43 @@
   $: allFilterBuckets = [...handCategoryBuckets, ...drawCategoryBuckets, ...equityBuckets]
   $: activeBucketKey = lockedBucketKey || hoveredBucketKey
   $: activeBucket = allFilterBuckets.find(bucket => bucket.key === activeBucketKey) || null
-  $: isFiltersView = !!node && activeTab === 'filters'
+  $: isFiltersView = !!node && $handsPanelTab === 'filters'
+  $: canShowRunouts = !!node && !node.is_terminal && !node.is_chance && (node.board.length === 4 || node.board.length === 5)
+  $: runoutStreetLabel = node?.board.length === 4 ? 'Turn' : node?.board.length === 5 ? 'River' : 'Runout'
+  $: if (!canShowRunouts && $handsPanelTab === 'runouts')
+    $handsPanelTab = 'hands'
   $: if (!isFiltersView) {
     hoveredBucketKey = null
     lockedBucketKey = null
   }
   $: $hoveredMatrixLabels = isFiltersView && activeBucket ? activeBucket.matrixLabels : null
+  $: runoutLoading = $runoutChartLoading
+  $: runoutError = $runoutChartError
+  $: runoutLegend = $runoutChartLegend
+  $: runoutBars = $runoutChartBars
+  $: hoveredRunoutBar = ($hoveredRunoutCard ? runoutBars.find(bar => bar.card === $hoveredRunoutCard) : null) || runoutBars[0] || null
+  $: if ($handsPanelTab !== 'runouts') {
+    $hoveredRunoutCard = null
+  }
+  $: if ($handsPanelTab === 'runouts' && !$hoveredRunoutCard && runoutBars.length > 0) {
+    $hoveredRunoutCard = runoutBars[0].card
+  }
+  $: if ($handsPanelTab === 'runouts' && canShowRunouts && node) {
+    const key = `${node.history_depth}:${node.board.join('')}:${node.current_player}`
+    if (runoutCacheKey !== key) {
+      runoutCacheKey = key
+      void loadRunoutChart(node)
+    }
+  }
+  $: runoutLegendByKey = runoutLegend.reduce((acc, item) => {
+    acc[item.key] = item
+    return acc
+  }, {} as Record<string, RunoutActionDef>)
 
   onDestroy(() => {
+    runoutRequestSeq++
     $hoveredMatrixLabels = null
+    $hoveredRunoutCard = null
   })
 
   function sortAndFilter(allHands: HandView[], f: string, col: SortCol, dir: number): HandView[] {
@@ -395,27 +454,308 @@
     lockedBucketKey = bucket.key
     hoveredBucketKey = null
   }
+
+  function toCardIndex(card: string): number | null {
+    if (!card || card.length < 2)
+      return null
+    const rank = RANKS.indexOf(card[0])
+    const suit = SUITS.indexOf(card[1])
+    if (rank < 0 || suit < 0)
+      return null
+    return rank * 4 + suit
+  }
+
+  function compareCards(a: string, b: string): number {
+    const ra = RANKS.indexOf(a[0])
+    const rb = RANKS.indexOf(b[0])
+    if (ra !== rb)
+      return rb - ra
+    return SUITS.indexOf(a[1]) - SUITS.indexOf(b[1])
+  }
+
+  function actionKey(action: ActionView): string {
+    return `${action.action_type}:${action.amount ?? ''}`
+  }
+
+  async function mapWithConcurrency<T, R>(
+    items: T[],
+    limit: number,
+    mapper: (item: T, index: number) => Promise<R>,
+  ): Promise<R[]> {
+    if (items.length === 0)
+      return []
+    const capped = Math.max(1, Math.min(limit, items.length))
+    const results = Array.from<R>({ length: items.length })
+    let nextIndex = 0
+
+    async function worker(): Promise<void> {
+      while (nextIndex < items.length) {
+        const i = nextIndex
+        nextIndex++
+        results[i] = await mapper(items[i], i)
+      }
+    }
+
+    const workers = Array.from({ length: capped }).map(() => worker())
+    await Promise.all(workers)
+    return results
+  }
+
+  async function fetchSummaryNode(spotId: number, path: number[]): Promise<NodeView> {
+    return api.libraryNode(spotId, path, 'summary')
+  }
+
+  async function findStreetCardContext(
+    spotId: number,
+    fullPath: number[],
+    targetBoardLength: number,
+  ): Promise<StreetCardContext | null> {
+    let prefix: number[] = []
+    let currentNode = await fetchSummaryNode(spotId, prefix)
+    let found: StreetCardContext | null = null
+
+    for (let i = 0; i < fullPath.length; i++) {
+      const step = fullPath[i]
+      const nextPath = [...prefix, step]
+      let nextNode: NodeView
+      try {
+        nextNode = await fetchSummaryNode(spotId, nextPath)
+      }
+      catch {
+        break
+      }
+
+      const isStreetCardDeal
+        = currentNode.is_chance
+          && nextNode.board.length === currentNode.board.length + 1
+          && nextNode.board.length === targetBoardLength
+
+      if (isStreetCardDeal) {
+        found = {
+          chancePath: [...prefix],
+          suffixPath: fullPath.slice(i + 1),
+          possibleCards: currentNode.possible_cards || [],
+          currentCard: nextNode.board[targetBoardLength - 1] || '',
+          targetBoardLength,
+        }
+      }
+
+      prefix = nextPath
+      currentNode = nextNode
+    }
+
+    return found
+  }
+
+  async function buildStreetComparisonBars(
+    spotId: number,
+    context: StreetCardContext,
+  ): Promise<{ legend: RunoutActionDef[], bars: RunoutCardBar[] }> {
+    interface CardTarget {
+      card: string
+      path: number[]
+    }
+
+    const targets: CardTarget[] = context.possibleCards
+      .filter(card => card !== context.currentCard)
+      .map((card) => {
+        const cardIndex = toCardIndex(card)
+        if (cardIndex === null)
+          return null
+        return {
+          card,
+          path: [...context.chancePath, cardIndex, ...context.suffixPath],
+        }
+      })
+      .filter(item => !!item) as CardTarget[]
+
+    const childNodes = await mapWithConcurrency(
+      targets,
+      RUNOUT_MAX_PARALLEL_REQUESTS,
+      async (target) => {
+        try {
+          const node = await fetchSummaryNode(spotId, target.path)
+          return { target, node }
+        }
+        catch {
+          return null
+        }
+      },
+    )
+
+    const actionDefs: Record<string, RunoutActionDef> = {}
+    const actionOrder: string[] = []
+    const cardActionSums: Record<string, Record<string, number>> = {}
+    const cardWeights: Record<string, number> = {}
+
+    for (const entry of childNodes) {
+      if (!entry)
+        continue
+      const { target, node: child } = entry
+      if (child.is_terminal || child.is_chance || child.board.length !== context.targetBoardLength)
+        continue
+      const usedActions = (child.actions || []).filter(isActionUsed)
+      if (usedActions.length === 0)
+        continue
+
+      const cardBucket = cardActionSums[target.card] || {}
+      for (const action of usedActions) {
+        const key = actionKey(action)
+        if (!actionDefs[key]) {
+          actionDefs[key] = {
+            key,
+            label: formatActionLabel(action, child.total_pot),
+            color: getActionColor(action, actionOrder.length),
+          }
+          actionOrder.push(key)
+        }
+        cardBucket[key] = action.frequency
+      }
+
+      cardActionSums[target.card] = cardBucket
+      cardWeights[target.card] = 1
+    }
+
+    const legend = actionOrder.map(key => actionDefs[key]).filter(item => !!item)
+    const cards = Object.keys(cardWeights).sort(compareCards)
+    const bars: RunoutCardBar[] = cards.map((card) => {
+      const sums = cardActionSums[card] || {}
+      const segments = legend
+        .map(actionDef => ({
+          key: actionDef.key,
+          value: sums[actionDef.key] || 0,
+          color: actionDef.color,
+        }))
+        .filter(segment => segment.value > 0.001)
+
+      const tooltip = segments.length > 0
+        ? segments.map((segment) => {
+            const def = actionDefs[segment.key]
+            const label = def ? def.label : segment.key
+            return `${label}: ${(segment.value * 100).toFixed(1)}%`
+          }).join(' | ')
+        : 'No strategy data'
+
+      return {
+        card,
+        segments,
+        tooltip,
+      }
+    })
+
+    return { legend, bars }
+  }
+
+  async function loadRunoutChart(sourceNode: NodeView): Promise<void> {
+    const requestId = ++runoutRequestSeq
+    $runoutChartLoading = true
+    $runoutChartError = ''
+    $runoutChartLegend = []
+    $runoutChartBars = []
+    $hoveredRunoutCard = null
+
+    try {
+      let spotId = $activeSpotId
+      let path = [...$activePath]
+
+      if (spotId === null || path.length === 0) {
+        try {
+          const context = await api.getActiveContext()
+          spotId = context.spot_id
+          path = context.path
+        }
+        catch {
+          // Fallback for older backends without /api/active-context
+        }
+      }
+
+      if (spotId === null) {
+        try {
+          const spots = await api.listSpots()
+          spotId = spots.active_id
+        }
+        catch {
+          spotId = null
+        }
+      }
+
+      if (spotId === null) {
+        $runoutChartError = 'No active spot context available.'
+        return
+      }
+
+      if (requestId !== runoutRequestSeq)
+        return
+
+      const streetContext = await findStreetCardContext(
+        spotId,
+        path,
+        sourceNode.board.length,
+      )
+      if (requestId !== runoutRequestSeq)
+        return
+
+      if (!streetContext) {
+        $runoutChartError = `Could not derive the ${runoutStreetLabel.toLowerCase()} card context. Go to Root and navigate the line again.`
+        return
+      }
+
+      const built = await buildStreetComparisonBars(spotId, streetContext)
+      if (requestId !== runoutRequestSeq)
+        return
+
+      $runoutChartLegend = built.legend
+      $runoutChartBars = built.bars
+      if (built.bars.length > 0)
+        $hoveredRunoutCard = built.bars[0].card
+
+      if (built.bars.length === 0) {
+        $runoutChartError = `No comparable strategies found for alternative ${runoutStreetLabel.toLowerCase()} cards.`
+      }
+    }
+    catch (e) {
+      if (requestId !== runoutRequestSeq)
+        return
+      $runoutChartError = (e as Error).message || 'Failed to load runout strategies'
+    }
+    finally {
+      if (requestId === runoutRequestSeq)
+        $runoutChartLoading = false
+    }
+  }
 </script>
 
 <div class="hands-panel">
   <div class="hand-tabs">
     <button
       class="tab-btn"
-      class:active={activeTab === 'hands'}
-      on:click={() => activeTab = 'hands'}
+      class:active={$handsPanelTab === 'hands'}
+      on:click={() => $handsPanelTab = 'hands'}
     >
       Hands
     </button>
     <button
       class="tab-btn"
-      class:active={activeTab === 'filters'}
-      on:click={() => activeTab = 'filters'}
+      class:active={$handsPanelTab === 'filters'}
+      on:click={() => $handsPanelTab = 'filters'}
     >
       Filters
     </button>
+    {#if canShowRunouts}
+      <button
+        class="tab-btn"
+        class:active={$handsPanelTab === 'runouts'}
+        on:click={() => {
+          $handsPanelTab = 'runouts'
+          runoutCacheKey = ''
+        }}
+      >
+        {runoutStreetLabel} Graph
+      </button>
+    {/if}
   </div>
 
-  {#if activeTab === 'hands'}
+  {#if $handsPanelTab === 'hands'}
     <div class="hand-filter">
       <input type="text" bind:value={filter} placeholder="Filter hands (e.g. AK, QQ)">
     </div>
@@ -460,7 +800,7 @@
         {/each}
       </tbody>
     </table>
-  {:else}
+  {:else if $handsPanelTab === 'filters'}
     <div class="filters-panel">
       <div class="filters-topbar">
         <div class="mode-tabs">
@@ -581,6 +921,50 @@
           </div>
         {/if}
       </div>
+    </div>
+  {:else}
+    <div class="runout-panel">
+      <div class="runout-head">
+        <div class="runout-title">{runoutStreetLabel} Detail (Hover Left Chart)</div>
+        <div class="runout-subtitle">Hover a card in the large chart to inspect the full strategy split here.</div>
+      </div>
+
+      {#if runoutLoading}
+        <div class="runout-empty">Loading {runoutStreetLabel.toLowerCase()} runout strategies...</div>
+      {:else if runoutError}
+        <div class="runout-empty">{runoutError}</div>
+      {:else if runoutBars.length === 0}
+        <div class="runout-empty">No runout strategy data found.</div>
+      {:else if hoveredRunoutBar}
+        <div class="runout-detail-card">
+          <span class="runout-card playing-card {suitClass(hoveredRunoutBar.card)}">{formatCardSmall(hoveredRunoutBar.card)}</span>
+          <span class="runout-detail-label">Hovered {runoutStreetLabel}</span>
+        </div>
+
+        <div class="filters-legend compact">
+          {#each runoutLegend as item (item.key)}
+            <span class="legend-chip">
+              <span class="legend-dot" style="background:{item.color}"></span>{item.label}
+            </span>
+          {/each}
+        </div>
+
+        <div class="runout-detail-list">
+          {#each hoveredRunoutBar.segments as segment (segment.key)}
+            <div class="runout-detail-row">
+              <div class="runout-detail-top">
+                <span>{runoutLegendByKey[segment.key]?.label || segment.key}</span>
+                <strong>{(segment.value * 100).toFixed(1)}%</strong>
+              </div>
+              <div class="runout-detail-bar">
+                <div class="fill" style="width:{(segment.value * 100).toFixed(1)}%;background:{segment.color}"></div>
+              </div>
+            </div>
+          {/each}
+        </div>
+      {:else}
+        <div class="runout-empty">Hover a card in the chart to view details.</div>
+      {/if}
     </div>
   {/if}
 </div>
