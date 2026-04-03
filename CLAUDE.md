@@ -4,7 +4,7 @@ Postflop poker solver with a Rust API backend (`app/`) and a standalone Svelte +
 
 ## Architecture
 
-- **Rust backend** (`app/`): Axum API server on port 3000, wraps the `postflop-solver` library. Pure API — no static file serving.
+- **Rust backend** (`app/`): Axum API server on port 3001, wraps the `postflop-solver` library. Pure API — no static file serving.
 - **Svelte frontend** (`app/frontend/`): Vite dev server on port 5173, proxies `/api` to the Rust backend. Uses Svelte 5 with TypeScript.
 
 ## Frontend Verification

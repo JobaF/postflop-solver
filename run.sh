@@ -6,13 +6,13 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 trap 'kill 0' EXIT
 
-echo "Starting Rust API on :3000..."
+echo "Starting Rust API on :3001..."
 (cd app && cargo run --release) &
 
 # Wait for backend to be ready before starting frontend
 echo "Waiting for backend..."
 for i in $(seq 1 60); do
-  if curl -s http://localhost:3000/api/solve/status > /dev/null 2>&1; then
+  if curl -s http://localhost:3001/api/solve/status > /dev/null 2>&1; then
     echo "Backend ready."
     break
   fi
