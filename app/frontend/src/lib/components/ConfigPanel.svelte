@@ -9,6 +9,7 @@
     currentNode,
     errorMsg,
     isSolving,
+    resetComboCoverage,
     solveInfo,
     statusText,
   } from '../stores'
@@ -110,6 +111,7 @@
         $statusText = 'Solved'
         $breadcrumb = ['Root']
         const node = await api.getNode()
+        resetComboCoverage()
         $currentNode = node
         $actionColors = (node.actions || []).map((a, i) => getActionColor(a, i))
         $appView = 'browser'

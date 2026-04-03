@@ -2,7 +2,14 @@
   import type { NodeView } from '../types'
   import { api } from '../api'
   import { getActionColor, suitClass, suitSymbol } from '../helpers'
-  import { actionColors, breadcrumb, currentNode } from '../stores'
+  import {
+    actionColors,
+    breadcrumb,
+    currentNode,
+    popComboCoverageSnapshot,
+    resetComboCoverage,
+    trimComboCoverageToDepth,
+  } from '../stores'
 
   $: node = $currentNode as NodeView | null
 
@@ -10,6 +17,7 @@
     const n = await api.root()
     $currentNode = n
     $breadcrumb = ['Root']
+    resetComboCoverage()
     $actionColors = (n.actions || []).map((a, i) => getActionColor(a, i))
   }
 
@@ -17,6 +25,7 @@
     const n = await api.back()
     if ($breadcrumb.length > 1)
       $breadcrumb = $breadcrumb.slice(0, -1)
+    popComboCoverageSnapshot()
     $currentNode = n
     $actionColors = (n.actions || []).map((a, i) => getActionColor(a, i))
   }
@@ -28,6 +37,7 @@
     }
     $currentNode = n
     $breadcrumb = $breadcrumb.slice(0, depth + 1)
+    trimComboCoverageToDepth(depth)
     $actionColors = ((n?.actions) || []).map((a, i) => getActionColor(a, i))
   }
 </script>

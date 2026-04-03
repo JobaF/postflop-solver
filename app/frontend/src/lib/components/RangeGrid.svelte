@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { ActionView, GridCell, NodeView } from '../types'
   import { ACTION_HOVER_MATCH_THRESHOLD, buildGradient, formatActionLabel, getActionColor, isActionUsed } from '../helpers'
-  import { actionColors, currentNode, hoveredActionIndex, hoveredMatrixLabels } from '../stores'
+  import { actionColors, comboCoverage, currentNode, hoveredActionIndex, hoveredMatrixLabels } from '../stores'
 
   const RANKS = 'AKQJT98765432'
 
@@ -11,6 +11,7 @@
   $: actions = node?.actions || [] as ActionView[]
   $: hoveredAction = $hoveredActionIndex
   $: hoveredLabels = $hoveredMatrixLabels
+  $: coverage = $comboCoverage
   $: totalPot = node?.total_pot || 0
   $: visibleActions = actions
     .map((action, index) => ({
@@ -21,7 +22,7 @@
     }))
     .filter(({ action }) => isActionUsed(action))
 
-  function cellStyle(cell: GridCell, actionIndex: number | null): string {
+  function cellBackgroundStyle(cell: GridCell, actionIndex: number | null): string {
     if (cell.combos < 0.001)
       return ''
     if (actionIndex !== null && actionIndex < actions.length) {
@@ -33,8 +34,27 @@
     return `background: ${buildGradient(cell.strategy, colors)}`
   }
 
+  function cellReachShare(cell: GridCell): number {
+    const player = node?.current_player
+    if (player !== 0 && player !== 1)
+      return 1
+    const byLabel = coverage[player]
+    const share = byLabel?.[cell.label]
+    if (share === undefined)
+      return 1
+    return Math.max(0, Math.min(1, share))
+  }
+
+  function cellFillStyle(cell: GridCell, actionIndex: number | null): string {
+    const fillPct = (cellReachShare(cell) * 100).toFixed(1)
+    return `height: ${fillPct}%; ${cellBackgroundStyle(cell, actionIndex)}`
+  }
+
   function cellTitle(cell: GridCell, actionIndex: number | null): string {
     let tip = `${cell.label} (${cell.combos.toFixed(1)} combos)\n`
+    const reach = cellReachShare(cell)
+    if (reach < 0.999)
+      tip += `Reach: ${(reach * 100).toFixed(1)}%\n`
     if (actionIndex !== null && actionIndex < actions.length) {
       const item = visibleActions.find(a => a.index === actionIndex)
       const freq = cell.strategy[actionIndex] || 0
@@ -74,9 +94,11 @@
               class="grid-cell"
               class:pair={r === c}
               class:dimmed={isDimmed(cell, hoveredLabels, hoveredAction)}
-              style={cellStyle(cell, hoveredAction)}
               title={cellTitle(cell, hoveredAction)}
-            >{cell.label}</div>
+            >
+              <div class="grid-cell-fill" style={cellFillStyle(cell, hoveredAction)}></div>
+              <span class="grid-cell-label">{cell.label}</span>
+            </div>
           {/if}
         {/each}
       {/each}

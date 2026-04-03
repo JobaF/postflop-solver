@@ -3,7 +3,13 @@
   import { onDestroy } from 'svelte'
   import { api } from '../api'
   import { formatActionLabel, formatActionPotPercent, getActionColor, isActionUsed } from '../helpers'
-  import { actionColors, breadcrumb, currentNode, hoveredActionIndex } from '../stores'
+  import {
+    actionColors,
+    breadcrumb,
+    currentNode,
+    hoveredActionIndex,
+    pushComboCoverageFromAction,
+  } from '../stores'
 
   $: node = $currentNode as NodeView | null
   $: colors = $actionColors
@@ -32,6 +38,7 @@
       return
     $hoveredActionIndex = null
     const n = await api.play({ action: index })
+    pushComboCoverageFromAction(node, index)
     $breadcrumb = [...$breadcrumb, label]
     $currentNode = n
     $actionColors = (n.actions || []).map((a, i) => getActionColor(a, i))

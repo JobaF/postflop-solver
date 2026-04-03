@@ -311,9 +311,20 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
 .grid-cell {
   position: relative; display: flex; align-items: center; justify-content: center;
   border-radius: 3px; font-size: var(--matrix-font-size); font-weight: 600;
+  background: var(--bg3);
   color: rgba(255,255,255,0.9); cursor: default; overflow: hidden;
   text-shadow: 0 1px 2px rgba(0,0,0,0.6);
   transition: opacity 0.14s ease, filter 0.14s ease;
+}
+.grid-cell-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+}
+.grid-cell-label {
+  position: relative;
+  z-index: 1;
 }
 .grid-cell.empty { background: var(--bg); color: var(--text2); opacity: 0.3; }
 .grid-cell.pair { border: 1px solid rgba(255,255,255,0.15); }

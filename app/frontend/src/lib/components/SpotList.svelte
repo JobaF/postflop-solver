@@ -10,6 +10,7 @@
     canSolve,
     currentNode,
     errorMsg,
+    resetComboCoverage,
     solveInfo,
     statusText,
   } from '../stores'
@@ -36,6 +37,7 @@
       const node = await api.loadSpot(id)
       $currentNode = node
       $breadcrumb = ['Root']
+      resetComboCoverage()
       $actionColors = (node.actions || []).map((a, i) => getActionColor(a, i))
       $appView = 'browser'
       $statusText = 'Browsing saved spot'
